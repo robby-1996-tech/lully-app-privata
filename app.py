@@ -842,6 +842,8 @@ BOOKING_HTML = """
             <option value="" {% if p=='' %}selected{% endif %}>Seleziona…</option>
             <option value="Fai da Te" {% if p=='Fai da Te' %}selected{% endif %}>{{package_labels['Fai da Te']}}</option>
             <option value="Lullyland Experience" {% if p=='Lullyland Experience' %}selected{% endif %}>{{package_labels['Lullyland Experience']}}</option>
+            <!-- ✅ RIAGGIUNTO ALL-INCLUSIVE -->
+            <option value="Lullyland all-inclusive" {% if p=='Lullyland all-inclusive' %}selected{% endif %}>{{package_labels['Lullyland all-inclusive']}}</option>
             <option value="Personalizzato" {% if p=='Personalizzato' %}selected{% endif %}>{{package_labels['Personalizzato']}}</option>
           </select>
           <div class="hint">I dettagli completi compaiono nel contratto dopo il salvataggio.</div>
