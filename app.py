@@ -164,44 +164,25 @@ def to_int(val):
         return None
 
 
-def to_decimal(val: str):
-    if val is None:
-        return Decimal("0.00")
-    s = str(val).strip().replace(",", ".")
-    if s == "":
-        return Decimal("0.00")
-    try:
-        return Decimal(s)
-    except:
-        return Decimal("0.00")
-
-
 def eur(d: Decimal) -> str:
-    # formato italiano base con virgola
     q = d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     s = f"{q:.2f}"
     return s.replace(".", ",")
 
 
 def build_contract_text(payload: dict) -> str:
-    """
-    Testo contratto "nerd" in <pre>, ma chiaro.
-    Qui dentro mettiamo i dettagli del pacchetto scelto + scelte + regole + extra + totale.
-    """
     pacchetto = payload.get("pacchetto", "")
     invitati_b = payload.get("invitati_bambini") or 0
     invitati_a = payload.get("invitati_adulti") or 0
     tot_persone = int(invitati_b) + int(invitati_a)
 
     lines = []
-    # Titolo pacchetto con prezzo
     if pacchetto in ("Fai da Te", "Lullyland Experience"):
-        price = PACKAGE_PRICES_EUR.get(None if pacchetto is None else pacchetto, Decimal("0.00"))
+        price = PACKAGE_PRICES_EUR.get(pacchetto, Decimal("0.00"))
         lines.append(f"PACCHETTO: {pacchetto} – €{eur(price)} a persona")
     else:
         lines.append(f"PACCHETTO: {pacchetto}")
 
-    # Dettagli pacchetto
     if pacchetto == "Fai da Te":
         lines.append("")
         lines.append("INCLUDE:")
@@ -237,7 +218,6 @@ def build_contract_text(payload: dict) -> str:
         lines.append("- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema")
         lines.append("- Piatti, bicchieri, tovaglioli")
 
-        # Catering baby dettagli
         if catering_choice == "menu_pizza":
             lines.append("- Catering baby: Menù pizza: Pizza Baby, patatine, bottiglietta dell’acqua")
         elif catering_choice == "box_merenda":
@@ -266,7 +246,6 @@ def build_contract_text(payload: dict) -> str:
         else:
             lines.append("- (da definire)")
 
-        # Extra selezionati
         extra_keys = payload.get("extra_keys", [])
         if extra_keys:
             lines.append("")
@@ -298,13 +277,6 @@ def build_contract_text(payload: dict) -> str:
 
 
 def compute_totals(payload: dict) -> dict:
-    """
-    Calcola totale stimato:
-    - pacchetto: prezzo * (bambini+adulti) (se prezzo definito)
-    - torta esterna: 1€/persona
-    - torta interna: persone * 0.1kg * 24€/kg
-    - extra: somma extra
-    """
     pacchetto = payload.get("pacchetto", "")
     invitati_b = int(payload.get("invitati_bambini") or 0)
     invitati_a = int(payload.get("invitati_adulti") or 0)
@@ -378,7 +350,6 @@ def prenota():
         return redirect(url_for("login"))
 
     if request.method == "POST":
-        # Consensi
         consenso_privacy = 1 if request.form.get("consenso_privacy") else 0
         consenso_foto = 1 if request.form.get("consenso_foto") else 0
 
@@ -395,7 +366,6 @@ def prenota():
                 extra_servizi=EXTRA_SERVIZI,
             )
 
-        # Firma (obbligatoria)
         firma_png_base64 = (request.form.get("firma_png_base64") or "").strip()
         data_firma = (request.form.get("data_firma") or "").strip()
 
@@ -427,7 +397,6 @@ def prenota():
 
         pacchetto = (request.form.get("pacchetto") or "").strip()
 
-        # Extra selezionati (checkbox)
         extra_keys = []
         for k in EXTRA_SERVIZI.keys():
             if request.form.get(f"extra_{k}"):
@@ -468,14 +437,13 @@ def prenota():
 
             "catering_baby_choice": (request.form.get("catering_baby_choice") or "").strip(),
 
-            "torta_choice": (request.form.get("torta_choice") or "").strip(),  # esterna/interna
-            "torta_interna_choice": (request.form.get("torta_interna_choice") or "").strip(),  # standard/altro
+            "torta_choice": (request.form.get("torta_choice") or "").strip(),
+            "torta_interna_choice": (request.form.get("torta_interna_choice") or "").strip(),
             "torta_gusto_altro": (request.form.get("torta_gusto_altro") or "").strip(),
 
             "extra_keys": extra_keys,
         }
 
-        # Validazioni minime
         if not payload["nome_festeggiato"]:
             return render_template_string(
                 BOOKING_HTML,
@@ -568,7 +536,6 @@ def prenota():
                         extra_servizi=EXTRA_SERVIZI,
                     )
 
-        # Contratto + Totale stimato (salvati in DB)
         totals = compute_totals(payload)
         contract_text = build_contract_text(payload)
 
@@ -668,7 +635,6 @@ def prenotazione_dettaglio(booking_id: int):
     if not row:
         abort(404)
 
-    # Calcoli di riepilogo (per mostrare kg consigliati, ecc.)
     invitati_b = int(row["invitati_bambini"] or 0)
     invitati_a = int(row["invitati_adulti"] or 0)
     tot_persone = invitati_b + invitati_a
@@ -781,7 +747,6 @@ BOOKING_HTML = """
     .sig-actions { display:flex; gap:10px; margin-top:10px; }
     .btn-secondary { background:#333; }
     .section { margin-top: 14px; padding-top: 10px; border-top: 1px solid #eee; }
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
   </style>
 </head>
 <body>
@@ -888,7 +853,7 @@ BOOKING_HTML = """
         <div class="col">
           <label>Acconto (€)</label>
           <input type="text" name="acconto_eur" placeholder="Es: 50,00" value="{{form.get('acconto_eur','')}}" />
-          <div class="hint">Campo libero. (Useremo questo dato anche per saldo più avanti.)</div>
+          <div class="hint">Campo libero.</div>
         </div>
       </div>
 
@@ -1011,7 +976,6 @@ BOOKING_HTML = """
     experienceBox.style.display = (p === 'Lullyland Experience') ? 'block' : 'none';
     personalizzatoBox.style.display = (p === 'Personalizzato') ? 'flex' : 'none';
 
-    // Torta
     const tc = tortaChoice ? tortaChoice.value : '';
     tortaInternaBox.style.display = (p === 'Lullyland Experience' && tc === 'interna') ? 'flex' : 'none';
 
@@ -1025,7 +989,6 @@ BOOKING_HTML = """
 
   refreshVisibility();
 
-  // Firma
   const canvas = document.getElementById('sigCanvas');
   const ctx = canvas.getContext('2d');
   let drawing = false;
@@ -1191,7 +1154,19 @@ DETAIL_HTML = """
     .v { font-weight: 800; margin-bottom:10px; }
     img { max-width: 760px; width:100%; border:1px solid #ddd; border-radius:12px; background:#fff; }
     .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
-    pre { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 13px; line-height: 1.35; background:#0b0f14; color:#e8eef5; padding: 14px; border-radius: 12px; }
+
+    /* CONTRATTO: stile "come il resto" (NO nero) */
+    .contract {
+      white-space: pre-wrap;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+      background:#f6f7fb;
+      color:#111;
+      padding: 14px;
+      border-radius: 12px;
+      border:1px solid #e8e8e8;
+    }
   </style>
 </head>
 <body>
@@ -1251,9 +1226,9 @@ DETAIL_HTML = """
 
       <div class="box" style="flex-basis:100%;">
         <div class="k">Dettagli pacchetto (contratto)</div>
-        <pre>{{b['dettagli_contratto_text'] or ''}}</pre>
+        <div class="contract">{{b['dettagli_contratto_text'] or ''}}</div>
 
-        <div class="k">Note</div>
+        <div class="k" style="margin-top:12px;">Note</div>
         <div class="v">{{b['note'] or '-'}}</div>
 
         <div class="k">Consensi</div>
