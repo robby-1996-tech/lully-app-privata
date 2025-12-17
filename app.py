@@ -1,7 +1,8 @@
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from decimal import Decimal, ROUND_HALF_UP
+import importlib.util
 
 from flask import (
     Flask,
@@ -24,6 +25,73 @@ APP_PIN = os.getenv("APP_PIN", "1234")
 # Se metti un Render Disk, imposta DB_PATH su un path persistente, es:
 # /var/data/lullyland.db
 DB_PATH = os.getenv("DB_PATH", "lullyland.db")
+
+
+# -------------------------
+# CALENDAR INTEGRATION (safe import calendar.py)
+# -------------------------
+def _load_local_calendar_module():
+    """
+    Carica il file calendar.py locale SENZA confliggere con la libreria standard 'calendar'.
+    Se non esiste o non contiene le funzioni, usa fallback interno.
+    """
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cal_path = os.path.join(base_dir, "calendar.py")
+        if not os.path.exists(cal_path):
+            return None
+        spec = importlib.util.spec_from_file_location("lully_calendar_module", cal_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore
+        return mod
+    except Exception:
+        return None
+
+
+_CAL_MOD = _load_local_calendar_module()
+
+
+def get_slots_for_date(date_str: str):
+    """
+    Regole slot:
+    - Lun-Dom: 17:00-20:00
+    - Sab-Dom: + 09:30-12:30
+    """
+    # Se calendar.py fornisce la funzione, usiamo quella
+    if _CAL_MOD and hasattr(_CAL_MOD, "get_slots_for_date"):
+        return _CAL_MOD.get_slots_for_date(date_str)
+
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+    except Exception:
+        return []
+    # weekday: 0 lun ... 5 sab 6 dom
+    if d.weekday() in (5, 6):
+        return ["09:30-12:30", "17:00-20:00"]
+    return ["17:00-20:00"]
+
+
+def assegna_slot_e_area(conn, data_evento: str):
+    """
+    Assegna automaticamente:
+    - slot_evento (uno degli slot disponibili quel giorno)
+    - area_num (1 o 2)
+    Regola: massimo 2 feste per slot (Area 1 + Area 2).
+    """
+    # Se calendar.py fornisce la funzione, usiamo quella
+    if _CAL_MOD and hasattr(_CAL_MOD, "assegna_slot_e_area"):
+        return _CAL_MOD.assegna_slot_e_area(conn, data_evento)
+
+    slots = get_slots_for_date(data_evento)
+    for slot in slots:
+        cur = conn.execute(
+            "SELECT COUNT(*) as c FROM bookings WHERE data_evento=? AND slot_evento=?",
+            (data_evento, slot),
+        )
+        count = cur.fetchone()["c"]
+        if count < 2:
+            return slot, int(count) + 1  # area 1 o 2
+    return None, None
 
 
 # -------------------------
@@ -159,6 +227,10 @@ def init_db():
     # Totali stimati (bloccati al momento della firma)
     ensure_column(conn, "bookings", "totale_stimato_eur", "TEXT")
     ensure_column(conn, "bookings", "dettagli_contratto_text", "TEXT")
+
+    # ✅ CALENDARIO: slot e area
+    ensure_column(conn, "bookings", "slot_evento", "TEXT")
+    ensure_column(conn, "bookings", "area_num", "INTEGER")
 
     conn.commit()
     conn.close()
@@ -732,6 +804,31 @@ def prenota():
 
         conn = get_db()
         cur = conn.cursor()
+
+        # ✅ CALENDARIO: assegna slot + area in base alla data_evento
+        slot_evento = ""
+        area_num = None
+        if payload.get("data_evento"):
+            slot_evento, area_num = assegna_slot_e_area(conn, payload["data_evento"])
+            if not slot_evento:
+                conn.close()
+                return render_template_string(
+                    BOOKING_HTML,
+                    app_name=APP_NAME,
+                    error="Giornata completa: non ci sono slot disponibili per questa data.",
+                    today=datetime.now().strftime("%Y-%m-%d"),
+                    form=request.form,
+                    package_labels=PACKAGE_LABELS,
+                    catering_baby_options=CATERING_BABY_OPTIONS,
+                    dessert_options=DESSERT_OPTIONS,
+                    torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                    extra_servizi=EXTRA_SERVIZI,
+                    extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                )
+        else:
+            # se manca la data_evento, non assegniamo slot/area (non blocchiamo il salvataggio)
+            slot_evento, area_num = "", None
+
         cur.execute(
             """
             INSERT INTO bookings (
@@ -752,7 +849,9 @@ def prenota():
                 torta_choice, torta_interna_choice, torta_gusto_altro,
                 extra_keys_csv,
                 totale_stimato_eur,
-                dettagli_contratto_text
+                dettagli_contratto_text,
+                slot_evento,
+                area_num
             ) VALUES (
                 :created_at,
                 :nome_festeggiato, :eta_festeggiato, :data_compleanno, :data_evento,
@@ -771,7 +870,9 @@ def prenota():
                 :torta_choice, :torta_interna_choice, :torta_gusto_altro,
                 :extra_keys_csv,
                 :totale_stimato_eur,
-                :dettagli_contratto_text
+                :dettagli_contratto_text,
+                :slot_evento,
+                :area_num
             )
             """,
             {
@@ -779,6 +880,8 @@ def prenota():
                 "extra_keys_csv": ",".join(payload["extra_keys"]),
                 "totale_stimato_eur": str(totals["totale"]),
                 "dettagli_contratto_text": contract_text,
+                "slot_evento": slot_evento,
+                "area_num": area_num,
             },
         )
         conn.commit()
@@ -875,6 +978,90 @@ def prenotazione_dettaglio(booking_id: int):
 
 
 # -------------------------
+# ✅ CALENDARIO (nuova pagina)
+# -------------------------
+def _parse_iso(dstr: str):
+    return datetime.strptime(dstr, "%Y-%m-%d").date()
+
+
+def _month_range(d: date):
+    first = d.replace(day=1)
+    if first.month == 12:
+        next_month = first.replace(year=first.year + 1, month=1, day=1)
+    else:
+        next_month = first.replace(month=first.month + 1, day=1)
+    last = next_month - timedelta(days=1)
+    return first, last
+
+
+@app.route("/calendario")
+def calendario():
+    if not is_logged_in():
+        return redirect(url_for("login"))
+
+    view = (request.args.get("view") or "month").strip().lower()
+    today = date.today()
+    base_date_str = (request.args.get("date") or today.strftime("%Y-%m-%d")).strip()
+    try:
+        base_d = _parse_iso(base_date_str)
+    except Exception:
+        base_d = today
+
+    # Range date da mostrare
+    if view == "week":
+        start = base_d - timedelta(days=base_d.weekday())  # lunedì
+        end = start + timedelta(days=6)
+    else:
+        start, end = _month_range(base_d)
+
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT id, data_evento, slot_evento, area_num,
+               nome_festeggiato, eta_festeggiato,
+               invitati_bambini, invitati_adulti, tema_evento, pacchetto
+        FROM bookings
+        WHERE data_evento BETWEEN ? AND ?
+        ORDER BY data_evento, slot_evento, area_num
+        """,
+        (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")),
+    ).fetchall()
+    conn.close()
+
+    # Indicizza per giorno
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["data_evento"], []).append(r)
+
+    # Nav date
+    if view == "week":
+        prev_d = base_d - timedelta(days=7)
+        next_d = base_d + timedelta(days=7)
+    else:
+        # mese precedente / successivo
+        if base_d.month == 1:
+            prev_d = base_d.replace(year=base_d.year - 1, month=12, day=1)
+        else:
+            prev_d = base_d.replace(month=base_d.month - 1, day=1)
+        if base_d.month == 12:
+            next_d = base_d.replace(year=base_d.year + 1, month=1, day=1)
+        else:
+            next_d = base_d.replace(month=base_d.month + 1, day=1)
+
+    return render_template_string(
+        CALENDAR_HTML,
+        app_name=APP_NAME,
+        view=view,
+        base_date=base_d.strftime("%Y-%m-%d"),
+        start=start.strftime("%Y-%m-%d"),
+        end=end.strftime("%Y-%m-%d"),
+        prev_date=prev_d.strftime("%Y-%m-%d"),
+        next_date=next_d.strftime("%Y-%m-%d"),
+        by_day=by_day,
+    )
+
+
+# -------------------------
 # HTML Templates
 # -------------------------
 LOGIN_HTML = """
@@ -918,6 +1105,7 @@ HOME_HTML = """
     .card { max-width: 700px; margin: 30px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
     a.btn { display:inline-block; padding:12px 14px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:700; }
     a.btn2 { display:inline-block; padding:12px 14px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:700; margin-left:10px;}
+    a.btn3 { display:inline-block; padding:12px 14px; border-radius:10px; background:#2b2b2b; color:#fff; text-decoration:none; font-weight:700; margin-left:10px;}
     .muted { color:#666; }
   </style>
 </head>
@@ -929,6 +1117,7 @@ HOME_HTML = """
     <p>
       <a class="btn" href="/prenota">+ Nuova prenotazione</a>
       <a class="btn2" href="/prenotazioni">Vedi prenotazioni</a>
+      <a class="btn3" href="/calendario">📅 Calendario</a>
     </p>
 
     <p><a href="/logout">Esci</a></p>
@@ -1431,6 +1620,7 @@ LIST_HTML = """
     <p>
       <a class="btn" href="/prenota">+ Nuova prenotazione</a>
       <span style="margin-left:10px;"><a href="/">Home</a></span>
+      <span style="margin-left:10px;"><a href="/calendario">Calendario</a></span>
     </p>
 
     {% if rows|length == 0 %}
@@ -1508,7 +1698,7 @@ DETAIL_HTML = """
 </head>
 <body>
   <div class="card">
-    <p><a href="/prenotazioni">← Prenotazioni</a> | <a href="/">Home</a></p>
+    <p><a href="/prenotazioni">← Prenotazioni</a> | <a href="/">Home</a> | <a href="/calendario">Calendario</a></p>
     <h2>Dettaglio prenotazione #{{b['id']}} – {{app_name}}</h2>
 
     <div class="grid">
@@ -1581,6 +1771,77 @@ DETAIL_HTML = """
         <img src="{{b['firma_png_base64']}}" alt="Firma genitore" />
       </div>
     </div>
+  </div>
+</body>
+</html>
+"""
+
+CALENDAR_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{app_name}} – Calendario</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 18px; background:#f6f7fb; }
+    .card { max-width: 980px; margin: 18px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
+    a.btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:800; }
+    a.btn2 { display:inline-block; padding:10px 12px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:800; margin-left:8px; }
+    .muted { color:#666; }
+    .day { border:1px solid #eee; border-radius:12px; padding:12px; margin-top:10px; background:#fafbfe; }
+    .ev { border:1px solid #ddd; border-radius:10px; padding:10px; margin-top:8px; background:#fff; }
+    .k { color:#666; font-size:12px; }
+    .v { font-weight:800; }
+    .top { display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    select, input { padding:10px; border-radius:10px; border:1px solid #dcdcdc; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">
+      <div>
+        <h2>📅 Calendario – {{app_name}}</h2>
+        <div class="muted">Vista: <b>{{view}}</b> | Range: {{start}} → {{end}}</div>
+      </div>
+      <div class="nav">
+        <a class="btn2" href="/?">Home</a>
+        <a class="btn2" href="/prenotazioni">Prenotazioni</a>
+        <a class="btn" href="/prenota">+ Nuova prenotazione</a>
+      </div>
+    </div>
+
+    <div class="nav" style="margin-top:12px;">
+      <a class="btn2" href="/calendario?view={{view}}&date={{prev_date}}">← Indietro</a>
+      <a class="btn2" href="/calendario?view={{view}}&date={{next_date}}">Avanti →</a>
+      <a class="btn2" href="/calendario?view=month&date={{base_date}}">Vista mese</a>
+      <a class="btn2" href="/calendario?view=week&date={{base_date}}">Vista settimana</a>
+    </div>
+
+    {% if by_day|length == 0 %}
+      <p class="muted" style="margin-top:14px;">Nessuna prenotazione in questo periodo.</p>
+    {% else %}
+      {% for day, events in by_day.items() %}
+        <div class="day">
+          <div class="v">{{day}}</div>
+          {% for e in events %}
+            <div class="ev">
+              <div class="v">
+                {{e['slot_evento'] or 'Slot n/d'}} – Area {{e['area_num'] or '-'}}
+              </div>
+              <div class="k">
+                🎉 {{e['nome_festeggiato']}} ({{e['eta_festeggiato'] or '-'}} anni)
+                • 👶 {{e['invitati_bambini'] or 0}} bimbi / 🧑 {{e['invitati_adulti'] or 0}} adulti
+                • 📦 {{e['pacchetto']}}
+                {% if e['tema_evento'] %} • 🎭 Tema: {{e['tema_evento']}}{% endif %}
+                • <a href="/prenotazioni/{{e['id']}}">Apri</a>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+    {% endif %}
   </div>
 </body>
 </html>
