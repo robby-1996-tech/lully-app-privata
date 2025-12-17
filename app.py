@@ -15,7 +15,75 @@ DB_PATH = os.getenv("DB_PATH", "lullyland.db")
 
 
 # -------------------------
-# HTML Templates
+# DB helpers
+# -------------------------
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def ensure_column(conn, table, col_name, col_type):
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if col_name not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+
+
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bookings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+
+            nome_festeggiato TEXT,
+            eta_festeggiato INTEGER,
+            data_compleanno TEXT,
+            data_evento TEXT,
+
+            madre_nome_cognome TEXT,
+            madre_telefono TEXT,
+
+            padre_nome_cognome TEXT,
+            padre_telefono TEXT,
+
+            indirizzo_residenza TEXT,
+            email TEXT,
+
+            invitati_bambini INTEGER,
+            invitati_adulti INTEGER,
+
+            pacchetto TEXT,
+            pacchetto_dettagli TEXT,
+            tema_evento TEXT,
+            note TEXT,
+
+            acconto REAL,
+
+            data_firma TEXT,
+            firma_png_base64 TEXT,
+
+            consenso_privacy INTEGER,
+            consenso_foto INTEGER
+        )
+        """
+    )
+
+    # Migrazioni sicure (se la tabella era già creata in passato)
+    ensure_column(conn, "bookings", "pacchetto_dettagli", "TEXT")
+    ensure_column(conn, "bookings", "acconto", "REAL")
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+# -------------------------
+# Templates
 # -------------------------
 LOGIN_HTML = """
 <!doctype html>
@@ -109,13 +177,6 @@ BOOKING_HTML = """
     canvas { width:100%; max-width: 760px; height: 220px; border: 2px dashed #bbb; border-radius: 12px; background:#fff; touch-action: none; }
     .sig-actions { display:flex; gap:10px; margin-top:10px; }
     .btn-secondary { background:#333; }
-
-    /* Personalizzato box */
-    .subbox {
-      margin-top:10px; padding:12px; border-radius:12px;
-      border:1px solid #e8e8e8; background:#fafbff;
-      display:none;
-    }
   </style>
 </head>
 <body>
@@ -195,20 +256,15 @@ BOOKING_HTML = """
       <div class="row">
         <div class="col">
           <label>Pacchetto scelto *</label>
-          <select name="pacchetto" required id="pacchettoSelect">
+          <select name="pacchetto" required>
             {% set p = form.get('pacchetto','') %}
             <option value="" {% if p=='' %}selected{% endif %}>Seleziona…</option>
-            <option value="Fai da Te" {% if p=='Fai da Te' %}selected{% endif %}>Fai da Te</option>
+            <option value="Fai da Te" {% if p=='Fai da Te' %}selected{% endif %}>Fai da Te €15,00 a persona</option>
             <option value="Lullyland Experience" {% if p=='Lullyland Experience' %}selected{% endif %}>Lullyland Experience</option>
             <option value="Lullyland all-inclusive" {% if p=='Lullyland all-inclusive' %}selected{% endif %}>Lullyland all-inclusive</option>
             <option value="Personalizzato" {% if p=='Personalizzato' %}selected{% endif %}>Personalizzato</option>
           </select>
-
-          <div class="subbox" id="personalizzatoBox">
-            <label>Dettagli personalizzazione *</label>
-            <textarea name="pacchetto_dettagli" id="pacchettoDettagli">{{form.get('pacchetto_dettagli','')}}</textarea>
-            <div class="hint">Scrivi cosa hai concordato (es. extra, variazioni, ecc.).</div>
-          </div>
+          <div class="hint">I dettagli del pacchetto saranno inseriti automaticamente nel contratto.</div>
         </div>
 
         <div class="col">
@@ -267,25 +323,6 @@ BOOKING_HTML = """
 
 <script>
 (function() {
-  // --- Personalizzato toggle
-  const sel = document.getElementById('pacchettoSelect');
-  const box = document.getElementById('personalizzatoBox');
-  const dettagli = document.getElementById('pacchettoDettagli');
-
-  function refreshPersonalizzato() {
-    const v = sel.value || '';
-    if (v === 'Personalizzato') {
-      box.style.display = 'block';
-      dettagli.setAttribute('required', 'required');
-    } else {
-      box.style.display = 'none';
-      dettagli.removeAttribute('required');
-    }
-  }
-  sel.addEventListener('change', refreshPersonalizzato);
-  refreshPersonalizzato();
-
-  // --- Signature
   const canvas = document.getElementById('sigCanvas');
   const ctx = canvas.getContext('2d');
   let drawing = false;
@@ -383,7 +420,6 @@ LIST_HTML = """
     a.btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:800; }
     a.link { color:#0a84ff; font-weight:700; text-decoration:none; }
     .muted { color:#666; }
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
   </style>
 </head>
 <body>
@@ -442,7 +478,7 @@ DETAIL_HTML = """
     .grid { display:flex; gap:12px; flex-wrap:wrap; }
     .box { flex:1; min-width: 280px; border:1px solid #eee; border-radius:12px; padding:12px; }
     .k { color:#666; font-size: 12px; margin-bottom:4px; }
-    .v { font-weight: 800; margin-bottom:10px; }
+    .v { font-weight: 800; margin-bottom:10px; white-space: pre-wrap; }
     img { max-width: 760px; width:100%; border:1px solid #ddd; border-radius:12px; background:#fff; }
     .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
   </style>
@@ -465,11 +501,6 @@ DETAIL_HTML = """
 
         <div class="k">Pacchetto</div>
         <div class="v">{{b['pacchetto']}}</div>
-
-        {% if b['pacchetto'] == 'Personalizzato' %}
-          <div class="k">Dettagli personalizzazione</div>
-          <div class="v">{{b['pacchetto_dettagli'] or '-'}}</div>
-        {% endif %}
 
         <div class="k">Acconto</div>
         <div class="v">{% if b['acconto'] is not none %}€ {{'%.2f'|format(b['acconto'])}}{% else %}-{% endif %}</div>
@@ -505,6 +536,9 @@ DETAIL_HTML = """
           <span class="pill" style="margin-left:8px;">Foto/Video: {{'SI' if b['consenso_foto']==1 else 'NO'}}</span>
         </div>
 
+        <div class="k">Dettagli pacchetto (contratto)</div>
+        <div class="v">{{b['pacchetto_dettagli'] or '-'}}</div>
+
         <div class="k">Data firma</div>
         <div class="v">{{b['data_firma']}}</div>
 
@@ -519,80 +553,58 @@ DETAIL_HTML = """
 
 
 # -------------------------
-# DB helpers
-# -------------------------
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def ensure_column(conn, table, col_name, col_type):
-    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    if col_name not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
-
-
-def init_db():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-
-            nome_festeggiato TEXT,
-            eta_festeggiato INTEGER,
-            data_compleanno TEXT,
-            data_evento TEXT,
-
-            madre_nome_cognome TEXT,
-            madre_telefono TEXT,
-
-            padre_nome_cognome TEXT,
-            padre_telefono TEXT,
-
-            indirizzo_residenza TEXT,
-            email TEXT,
-
-            invitati_bambini INTEGER,
-            invitati_adulti INTEGER,
-
-            pacchetto TEXT,
-            pacchetto_dettagli TEXT,
-            tema_evento TEXT,
-            note TEXT,
-
-            acconto REAL,
-
-            data_firma TEXT,
-            firma_png_base64 TEXT,
-
-            consenso_privacy INTEGER,
-            consenso_foto INTEGER
-        )
-        """
-    )
-
-    # Migrazione sicura (se la tabella esiste già, aggiunge SOLO le colonne mancanti)
-    ensure_column(conn, "bookings", "pacchetto_dettagli", "TEXT")
-    ensure_column(conn, "bookings", "acconto", "REAL")
-
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
-# -------------------------
-# Auth
+# Helpers
 # -------------------------
 def is_logged_in():
     return session.get("ok") is True
 
 
+def to_int(val):
+    try:
+        return int(val) if val not in (None, "",) else None
+    except:
+        return None
+
+
+def to_float(val):
+    try:
+        return float(val) if val not in (None, "",) else None
+    except:
+        return None
+
+
+def build_pacchetto_dettagli(pacchetto: str) -> str:
+    pacchetto = (pacchetto or "").strip()
+
+    if pacchetto == "Fai da Te":
+        return (
+            "PACCHETTO: Fai da Te – €15,00 a persona\n\n"
+            "INCLUDE:\n"
+            "- Accesso al parco giochi di 350mq\n"
+            "- Pulizia e igienizzazione impeccabili prima e dopo la festa\n"
+            "- Area riservata con tavoli e sedie\n"
+            "- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema\n\n"
+            "NON INCLUDE:\n"
+            "- Piatti, bicchieri, tovaglioli, tovaglie\n"
+            "- Servizio\n"
+            "- Sgombero tavoli\n\n"
+            "NOTE IMPORTANTI (REGOLE):\n"
+            "- È obbligatorio fornire certificazione alimentare sia per il buffet che per la torta (fornita dal fornitore scelto dal cliente)\n"
+            "- È obbligatorio acquistare le bibite al nostro bar: non è possibile introdurre bevande dall’esterno\n"
+            "- È obbligatorio l’utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco\n"
+            "- È severamente vietato entrare all’interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): "
+            "pena addebito €60,00 per ogni mattonella antitrauma forata\n"
+            "- È obbligatorio l’utilizzo di copri scarpe all’interno del parco (da noi forniti)\n"
+            "- È severamente vietato introdurre cibo e bevande all’interno del parco\n"
+        )
+
+    # Per ora gli altri pacchetti li completiamo dopo, uno alla volta
+    return ""
+
+
+# -------------------------
+# Routes
+# -------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -610,9 +622,6 @@ def logout():
     return redirect(url_for("login"))
 
 
-# -------------------------
-# Pages
-# -------------------------
 @app.route("/")
 def home():
     if not is_logged_in():
@@ -626,55 +635,29 @@ def prenota():
         return redirect(url_for("login"))
 
     if request.method == "POST":
-        # Consensi
         consenso_privacy = 1 if request.form.get("consenso_privacy") else 0
         consenso_foto = 1 if request.form.get("consenso_foto") else 0
 
         if consenso_privacy != 1:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Devi accettare l’informativa privacy per continuare.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-            )
+            return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Devi accettare l’informativa privacy per continuare.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
 
-        # Firma (obbligatoria)
         firma_png_base64 = (request.form.get("firma_png_base64") or "").strip()
         data_firma = (request.form.get("data_firma") or "").strip()
 
         if not data_firma:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Inserisci la data firma.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-            )
+            return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Inserisci la data firma.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
 
         if not firma_png_base64.startswith("data:image/png;base64,"):
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Firma mancante: firma nel riquadro prima di salvare.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-            )
-
-        def to_int(val):
-            try:
-                return int(val) if val not in (None, "",) else None
-            except:
-                return None
-
-        def to_float(val):
-            try:
-                return float(val) if val not in (None, "",) else None
-            except:
-                return None
+            return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Firma mancante: firma nel riquadro prima di salvare.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
 
         pacchetto = (request.form.get("pacchetto") or "").strip()
-        pacchetto_dettagli = (request.form.get("pacchetto_dettagli") or "").strip()
+
+        valid_packages = ("Fai da Te", "Lullyland Experience", "Lullyland all-inclusive", "Personalizzato")
+        if pacchetto not in valid_packages:
+            return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Seleziona un pacchetto valido.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
+
+        # Dettagli pacchetto: per ora auto SOLO per Fai da Te
+        pacchetto_dettagli = build_pacchetto_dettagli(pacchetto)
 
         payload = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -698,6 +681,7 @@ def prenota():
 
             "pacchetto": pacchetto,
             "pacchetto_dettagli": pacchetto_dettagli,
+
             "tema_evento": (request.form.get("tema_evento") or "").strip(),
             "note": (request.form.get("note") or "").strip(),
 
@@ -710,34 +694,8 @@ def prenota():
             "consenso_foto": consenso_foto,
         }
 
-        # Validazioni minime (solo per evitare buchi grossi)
         if not payload["nome_festeggiato"]:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Inserisci il nome del festeggiato.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-            )
-
-        valid_packages = ("Fai da Te", "Lullyland Experience", "Lullyland all-inclusive", "Personalizzato")
-        if payload["pacchetto"] not in valid_packages:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Seleziona un pacchetto valido.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-            )
-
-        if payload["pacchetto"] == "Personalizzato" and not payload["pacchetto_dettagli"]:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Per il pacchetto Personalizzato devi compilare i dettagli.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-            )
+            return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Inserisci il nome del festeggiato.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
 
         conn = get_db()
         cur = conn.cursor()
@@ -750,7 +708,8 @@ def prenota():
                 padre_nome_cognome, padre_telefono,
                 indirizzo_residenza, email,
                 invitati_bambini, invitati_adulti,
-                pacchetto, pacchetto_dettagli, tema_evento, note,
+                pacchetto, pacchetto_dettagli,
+                tema_evento, note,
                 acconto,
                 data_firma, firma_png_base64,
                 consenso_privacy, consenso_foto
@@ -761,7 +720,8 @@ def prenota():
                 :padre_nome_cognome, :padre_telefono,
                 :indirizzo_residenza, :email,
                 :invitati_bambini, :invitati_adulti,
-                :pacchetto, :pacchetto_dettagli, :tema_evento, :note,
+                :pacchetto, :pacchetto_dettagli,
+                :tema_evento, :note,
                 :acconto,
                 :data_firma, :firma_png_base64,
                 :consenso_privacy, :consenso_foto
@@ -774,13 +734,7 @@ def prenota():
 
         return redirect(url_for("prenotazioni"))
 
-    return render_template_string(
-        BOOKING_HTML,
-        app_name=APP_NAME,
-        error=None,
-        today=datetime.now().strftime("%Y-%m-%d"),
-        form={},
-    )
+    return render_template_string(BOOKING_HTML, app_name=APP_NAME, error=None, today=datetime.now().strftime("%Y-%m-%d"), form={})
 
 
 @app.route("/prenotazioni")
