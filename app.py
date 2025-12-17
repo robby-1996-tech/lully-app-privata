@@ -57,6 +57,11 @@ def init_db():
 
             pacchetto TEXT,
             pacchetto_dettagli TEXT,
+
+            experience_menu_baby TEXT,
+            experience_torta_tipo TEXT,
+            experience_torta_gusto TEXT,
+
             tema_evento TEXT,
             note TEXT,
 
@@ -71,9 +76,13 @@ def init_db():
         """
     )
 
-    # Migrazioni sicure (se la tabella era già creata in passato)
+    # Migrazioni sicure (se la tabella era già creata)
     ensure_column(conn, "bookings", "pacchetto_dettagli", "TEXT")
     ensure_column(conn, "bookings", "acconto", "REAL")
+
+    ensure_column(conn, "bookings", "experience_menu_baby", "TEXT")
+    ensure_column(conn, "bookings", "experience_torta_tipo", "TEXT")
+    ensure_column(conn, "bookings", "experience_torta_gusto", "TEXT")
 
     conn.commit()
     conn.close()
@@ -177,6 +186,16 @@ BOOKING_HTML = """
     canvas { width:100%; max-width: 760px; height: 220px; border: 2px dashed #bbb; border-radius: 12px; background:#fff; touch-action: none; }
     .sig-actions { display:flex; gap:10px; margin-top:10px; }
     .btn-secondary { background:#333; }
+
+    /* Experience options box */
+    .optbox {
+      margin-top:10px;
+      padding:12px;
+      border:1px solid #e8e8e8;
+      border-radius:12px;
+      background:#fafbff;
+      display:none;
+    }
   </style>
 </head>
 <body>
@@ -256,15 +275,40 @@ BOOKING_HTML = """
       <div class="row">
         <div class="col">
           <label>Pacchetto scelto *</label>
-          <select name="pacchetto" required>
+          <select name="pacchetto" required id="pacchettoSelect">
             {% set p = form.get('pacchetto','') %}
             <option value="" {% if p=='' %}selected{% endif %}>Seleziona…</option>
             <option value="Fai da Te" {% if p=='Fai da Te' %}selected{% endif %}>Fai da Te €15,00 a persona</option>
-            <option value="Lullyland Experience" {% if p=='Lullyland Experience' %}selected{% endif %}>Lullyland Experience</option>
+            <option value="Lullyland Experience" {% if p=='Lullyland Experience' %}selected{% endif %}>Lullyland Experience €20,00 a persona</option>
             <option value="Lullyland all-inclusive" {% if p=='Lullyland all-inclusive' %}selected{% endif %}>Lullyland all-inclusive</option>
             <option value="Personalizzato" {% if p=='Personalizzato' %}selected{% endif %}>Personalizzato</option>
           </select>
           <div class="hint">I dettagli del pacchetto saranno inseriti automaticamente nel contratto.</div>
+
+          <div class="optbox" id="experienceBox">
+            <label>Catering baby (Experience) *</label>
+            {% set mb = form.get('experience_menu_baby','') %}
+            <select name="experience_menu_baby" id="experience_menu_baby">
+              <option value="" {% if mb=='' %}selected{% endif %}>Seleziona…</option>
+              <option value="menu_pizza" {% if mb=='menu_pizza' %}selected{% endif %}>Menù pizza</option>
+              <option value="box_merenda" {% if mb=='box_merenda' %}selected{% endif %}>Box merenda</option>
+            </select>
+
+            <label style="margin-top:10px;">Torta di compleanno (Experience) *</label>
+            {% set tt = form.get('experience_torta_tipo','') %}
+            <select name="experience_torta_tipo" id="experience_torta_tipo">
+              <option value="" {% if tt=='' %}selected{% endif %}>Seleziona…</option>
+              <option value="esterna" {% if tt=='esterna' %}selected{% endif %}>Torta esterna +€1,00 a persona</option>
+              <option value="interna" {% if tt=='interna' %}selected{% endif %}>Torta interna (da noi)</option>
+            </select>
+
+            <div id="tortaGustoBox" style="display:none;">
+              <label style="margin-top:10px;">Gusto torta (solo se torta interna)</label>
+              <input name="experience_torta_gusto" id="experience_torta_gusto" value="{{form.get('experience_torta_gusto','')}}" placeholder="Es. Kinder, Nutella, crema, ecc." />
+            </div>
+
+            <div class="hint">Queste scelte entrano automaticamente nel contratto.</div>
+          </div>
         </div>
 
         <div class="col">
@@ -323,6 +367,49 @@ BOOKING_HTML = """
 
 <script>
 (function() {
+  // --- Experience options toggle
+  const sel = document.getElementById('pacchettoSelect');
+  const expBox = document.getElementById('experienceBox');
+  const menuBaby = document.getElementById('experience_menu_baby');
+  const tortaTipo = document.getElementById('experience_torta_tipo');
+  const tortaGustoBox = document.getElementById('tortaGustoBox');
+  const tortaGusto = document.getElementById('experience_torta_gusto');
+
+  function refreshExperience() {
+    const v = sel.value || '';
+    if (v === 'Lullyland Experience') {
+      expBox.style.display = 'block';
+      menuBaby.setAttribute('required', 'required');
+      tortaTipo.setAttribute('required', 'required');
+      refreshTorta();
+    } else {
+      expBox.style.display = 'none';
+      menuBaby.removeAttribute('required');
+      tortaTipo.removeAttribute('required');
+      tortaGustoBox.style.display = 'none';
+      tortaGusto.value = '';
+      tortaGusto.removeAttribute('required');
+    }
+  }
+
+  function refreshTorta() {
+    const t = tortaTipo.value || '';
+    if (t === 'interna') {
+      tortaGustoBox.style.display = 'block';
+      tortaGusto.setAttribute('required', 'required');
+    } else {
+      tortaGustoBox.style.display = 'none';
+      tortaGusto.value = '';
+      tortaGusto.removeAttribute('required');
+    }
+  }
+
+  sel.addEventListener('change', refreshExperience);
+  tortaTipo.addEventListener('change', refreshTorta);
+  refreshExperience();
+
+
+  // --- Signature
   const canvas = document.getElementById('sigCanvas');
   const ctx = canvas.getContext('2d');
   let drawing = false;
@@ -573,7 +660,14 @@ def to_float(val):
         return None
 
 
-def build_pacchetto_dettagli(pacchetto: str) -> str:
+def build_pacchetto_dettagli(
+    pacchetto: str,
+    invitati_adulti: int | None,
+    invitati_bambini: int | None,
+    experience_menu_baby: str,
+    experience_torta_tipo: str,
+    experience_torta_gusto: str,
+) -> str:
     pacchetto = (pacchetto or "").strip()
 
     if pacchetto == "Fai da Te":
@@ -598,7 +692,64 @@ def build_pacchetto_dettagli(pacchetto: str) -> str:
             "- È severamente vietato introdurre cibo e bevande all’interno del parco\n"
         )
 
-    # Per ora gli altri pacchetti li completiamo dopo, uno alla volta
+    if pacchetto == "Lullyland Experience":
+        # Menu baby dettagli
+        if experience_menu_baby == "menu_pizza":
+            baby_txt = "Menù pizza: Pizza Baby, patatine, bottiglietta dell’acqua"
+        elif experience_menu_baby == "box_merenda":
+            baby_txt = (
+                "Box merenda: sandwich con prosciutto cotto, rustico würstel, mini pizzetta, "
+                "panzerottino, patatine fritte e bottiglietta dell’acqua"
+            )
+        else:
+            baby_txt = "-"
+
+        # Torta
+        torta_txt = ""
+        extra_torta_txt = ""
+        if experience_torta_tipo == "esterna":
+            torta_txt = "Torta esterna (servizio torta) +€1,00 a persona"
+            n_pers = 0
+            if invitati_adulti:
+                n_pers += int(invitati_adulti)
+            if invitati_bambini:
+                n_pers += int(invitati_bambini)
+            if n_pers > 0:
+                extra_torta_txt = f"\n  (Totale persone indicate: {n_pers}. Il costo servizio torta si calcola a persona.)"
+        elif experience_torta_tipo == "interna":
+            gusto = (experience_torta_gusto or "").strip() or "-"
+            torta_txt = f"Torta interna (da noi) – Gusto concordato: {gusto}"
+
+        # Regola certificazione SOLO se torta esterna
+        regola_cert = ""
+        if experience_torta_tipo == "esterna":
+            regola_cert = "- Se si sceglie torta esterna: è obbligatorio fornire certificazione alimentare per la torta (fornita dal fornitore scelto dal cliente)\n"
+
+        return (
+            "PACCHETTO: Lullyland Experience – €20,00 a persona\n\n"
+            "INCLUDE:\n"
+            "- Accesso al parco giochi di 350mq\n"
+            "- Pulizia e igienizzazione impeccabili prima e dopo la festa\n"
+            "- Area riservata con tavoli e sedie\n"
+            "- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema\n"
+            "- Piatti, bicchieri, tovaglioli\n"
+            f"- Catering baby: {baby_txt}\n"
+            "- Catering adulti: fritti centrali (panzerottini, patatine, bandidos, crocchette), "
+            "pizze centrali margherita e bibite centrali da 1,5lt (acqua, Coca-Cola, Fanta)\n\n"
+            "NON INCLUDE:\n"
+            "- Torta di compleanno\n\n"
+            "TORTA (SCELTA):\n"
+            f"- {torta_txt}{extra_torta_txt}\n\n"
+            "NOTE IMPORTANTI (REGOLE):\n"
+            f"{regola_cert}"
+            "- È obbligatorio l’utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco\n"
+            "- È severamente vietato entrare all’interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): "
+            "pena addebito €60,00 per ogni mattonella antitrauma forata\n"
+            "- È obbligatorio l’utilizzo di copri scarpe all’interno del parco (da noi forniti)\n"
+            "- È severamente vietato introdurre cibo e bevande all’interno del parco\n"
+        )
+
+    # Per ora gli altri pacchetti li completiamo dopo
     return ""
 
 
@@ -639,7 +790,13 @@ def prenota():
         consenso_foto = 1 if request.form.get("consenso_foto") else 0
 
         if consenso_privacy != 1:
-            return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Devi accettare l’informativa privacy per continuare.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
+            return render_template_string(
+                BOOKING_HTML,
+                app_name=APP_NAME,
+                error="Devi accettare l’informativa privacy per continuare.",
+                today=datetime.now().strftime("%Y-%m-%d"),
+                form=request.form,
+            )
 
         firma_png_base64 = (request.form.get("firma_png_base64") or "").strip()
         data_firma = (request.form.get("data_firma") or "").strip()
@@ -651,13 +808,35 @@ def prenota():
             return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Firma mancante: firma nel riquadro prima di salvare.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
 
         pacchetto = (request.form.get("pacchetto") or "").strip()
-
         valid_packages = ("Fai da Te", "Lullyland Experience", "Lullyland all-inclusive", "Personalizzato")
         if pacchetto not in valid_packages:
             return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Seleziona un pacchetto valido.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
 
-        # Dettagli pacchetto: per ora auto SOLO per Fai da Te
-        pacchetto_dettagli = build_pacchetto_dettagli(pacchetto)
+        # Extra Experience (solo se serve)
+        experience_menu_baby = (request.form.get("experience_menu_baby") or "").strip()
+        experience_torta_tipo = (request.form.get("experience_torta_tipo") or "").strip()
+        experience_torta_gusto = (request.form.get("experience_torta_gusto") or "").strip()
+
+        if pacchetto == "Lullyland Experience":
+            if experience_menu_baby not in ("menu_pizza", "box_merenda"):
+                return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Per Experience seleziona Catering baby (Menù pizza o Box merenda).", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
+            if experience_torta_tipo not in ("esterna", "interna"):
+                return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Per Experience seleziona l’opzione torta (esterna o interna).", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
+            if experience_torta_tipo == "interna" and not experience_torta_gusto:
+                return render_template_string(BOOKING_HTML, app_name=APP_NAME, error="Per torta interna inserisci il gusto concordato.", today=datetime.now().strftime("%Y-%m-%d"), form=request.form)
+
+        invitati_adulti = to_int(request.form.get("invitati_adulti"))
+        invitati_bambini = to_int(request.form.get("invitati_bambini"))
+
+        # Dettagli pacchetto: auto per Fai da Te + Experience (come richiesto)
+        pacchetto_dettagli = build_pacchetto_dettagli(
+            pacchetto=pacchetto,
+            invitati_adulti=invitati_adulti,
+            invitati_bambini=invitati_bambini,
+            experience_menu_baby=experience_menu_baby,
+            experience_torta_tipo=experience_torta_tipo,
+            experience_torta_gusto=experience_torta_gusto,
+        )
 
         payload = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -676,11 +855,15 @@ def prenota():
             "indirizzo_residenza": (request.form.get("indirizzo_residenza") or "").strip(),
             "email": (request.form.get("email") or "").strip(),
 
-            "invitati_bambini": to_int(request.form.get("invitati_bambini")),
-            "invitati_adulti": to_int(request.form.get("invitati_adulti")),
+            "invitati_bambini": invitati_bambini,
+            "invitati_adulti": invitati_adulti,
 
             "pacchetto": pacchetto,
             "pacchetto_dettagli": pacchetto_dettagli,
+
+            "experience_menu_baby": experience_menu_baby,
+            "experience_torta_tipo": experience_torta_tipo,
+            "experience_torta_gusto": experience_torta_gusto,
 
             "tema_evento": (request.form.get("tema_evento") or "").strip(),
             "note": (request.form.get("note") or "").strip(),
@@ -709,6 +892,7 @@ def prenota():
                 indirizzo_residenza, email,
                 invitati_bambini, invitati_adulti,
                 pacchetto, pacchetto_dettagli,
+                experience_menu_baby, experience_torta_tipo, experience_torta_gusto,
                 tema_evento, note,
                 acconto,
                 data_firma, firma_png_base64,
@@ -721,6 +905,7 @@ def prenota():
                 :indirizzo_residenza, :email,
                 :invitati_bambini, :invitati_adulti,
                 :pacchetto, :pacchetto_dettagli,
+                :experience_menu_baby, :experience_torta_tipo, :experience_torta_gusto,
                 :tema_evento, :note,
                 :acconto,
                 :data_firma, :firma_png_base64,
