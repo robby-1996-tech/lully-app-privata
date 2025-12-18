@@ -30,8 +30,7 @@ from flask import (
     abort,
 )
 
-# ✅ Import dal TUO calendar.py (deve essere nella stessa cartella)
-import calendar as lcal
+
 
 
 app = Flask(__name__)
@@ -1124,7 +1123,7 @@ CALENDAR_HTML = """
 
                   {% for slot_key, slot_label in slot_labels.items() %}
                     {% set slot_map = day.get(slot_key, {}) %}
-                    {% if slot_map %}
+                    
                       <div class="slot">
                         <div><span class="badge">{{slot_key}}</span> <span class="muted">{{slot_label}}</span></div>
                         <div style="margin-top:6px;">
@@ -1142,7 +1141,7 @@ CALENDAR_HTML = """
                           {% endfor %}
                         </div>
                       </div>
-                    {% endif %}
+                    
                   {% endfor %}
                 </td>
               {% endif %}
