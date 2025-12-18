@@ -1,23 +1,6 @@
 import os
 import sqlite3
-
-import importlib.util
-from pathlib import Path
-
-def load_local_calendar_module():
-    here = Path(__file__).resolve().parent
-    cal_path = here / "calendar.py"
-    if not cal_path.exists():
-        raise RuntimeError(f"calendar.py non trovato in {here}")
-    spec = importlib.util.spec_from_file_location("lully_calendar", str(cal_path))
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    return mod
-
-lcal = load_local_calendar_module()
-
-from datetime import datetime, date, timedelta
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from flask import (
@@ -29,9 +12,6 @@ from flask import (
     render_template_string,
     abort,
 )
-
-
-
 
 app = Flask(__name__)
 
@@ -179,9 +159,6 @@ def init_db():
     # Totali stimati (bloccati al momento della firma)
     ensure_column(conn, "bookings", "totale_stimato_eur", "TEXT")
     ensure_column(conn, "bookings", "dettagli_contratto_text", "TEXT")
-
-    # ✅ CALENDARIO: colonne slot_key e area_num
-    lcal.ensure_calendar_columns(conn)
 
     conn.commit()
     conn.close()
@@ -480,53 +457,6 @@ def home():
     return render_template_string(HOME_HTML, app_name=APP_NAME)
 
 
-# ✅ CALENDARIO (vista mese)
-@app.route("/calendario")
-def calendario():
-    if not is_logged_in():
-        return redirect(url_for("login"))
-
-    today = date.today()
-    year = to_int(request.args.get("year")) or today.year
-    month = to_int(request.args.get("month")) or today.month
-
-    # griglia mese
-    grid = lcal.month_grid(year, month)
-
-    # range date da caricare (min/max della griglia)
-    all_days = [d for week in grid for d in week if d is not None]
-    if not all_days:
-        all_days = [date(year, month, 1)]
-    start_d = min(all_days)
-    end_d = max(all_days)
-
-    conn = get_db()
-    events = lcal.get_events_between(conn, start_d, end_d)
-    conn.close()
-
-    idx = lcal.build_calendar_index(events)
-
-    # nav mese
-    cur_first = date(year, month, 1)
-    prev_month = (cur_first - timedelta(days=1)).replace(day=1)
-    next_month = (cur_first.replace(day=28) + timedelta(days=4)).replace(day=1)
-
-    return render_template_string(
-        CALENDAR_HTML,
-        app_name=APP_NAME,
-        year=year,
-        month=month,
-        grid=grid,
-        idx=idx,
-        slot_labels=lcal.SLOT_LABELS,
-        prev_year=prev_month.year,
-        prev_month=prev_month.month,
-        next_year=next_month.year,
-        next_month=next_month.month,
-        today=today,
-    )
-
-
 @app.route("/prenota", methods=["GET", "POST"])
 def prenota():
     if not is_logged_in():
@@ -647,21 +577,6 @@ def prenota():
                 BOOKING_HTML,
                 app_name=APP_NAME,
                 error="Inserisci il nome del festeggiato.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-                package_labels=PACKAGE_LABELS,
-                catering_baby_options=CATERING_BABY_OPTIONS,
-                dessert_options=DESSERT_OPTIONS,
-                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
-                extra_servizi=EXTRA_SERVIZI,
-                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
-            )
-
-        if not payload["data_evento"]:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Seleziona la data dell’evento.",
                 today=datetime.now().strftime("%Y-%m-%d"),
                 form=request.form,
                 package_labels=PACKAGE_LABELS,
@@ -816,29 +731,6 @@ def prenota():
         contract_text = build_contract_text(payload)
 
         conn = get_db()
-
-        # ✅ CALENDARIO: assegna slot + area in base alla data_evento (2 feste max per slot)
-        try:
-            slot_key, area_num = lcal.auto_assign_slot_and_area(conn, payload["data_evento"], preferred_slot=None)
-        except ValueError as e:
-            conn.close()
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error=str(e),
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-                package_labels=PACKAGE_LABELS,
-                catering_baby_options=CATERING_BABY_OPTIONS,
-                dessert_options=DESSERT_OPTIONS,
-                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
-                extra_servizi=EXTRA_SERVIZI,
-                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
-            )
-
-        payload["slot_key"] = slot_key
-        payload["area_num"] = area_num
-
         cur = conn.cursor()
         cur.execute(
             """
@@ -860,9 +752,7 @@ def prenota():
                 torta_choice, torta_interna_choice, torta_gusto_altro,
                 extra_keys_csv,
                 totale_stimato_eur,
-                dettagli_contratto_text,
-                slot_key,
-                area_num
+                dettagli_contratto_text
             ) VALUES (
                 :created_at,
                 :nome_festeggiato, :eta_festeggiato, :data_compleanno, :data_evento,
@@ -881,9 +771,7 @@ def prenota():
                 :torta_choice, :torta_interna_choice, :torta_gusto_altro,
                 :extra_keys_csv,
                 :totale_stimato_eur,
-                :dettagli_contratto_text,
-                :slot_key,
-                :area_num
+                :dettagli_contratto_text
             )
             """,
             {
@@ -922,8 +810,7 @@ def prenotazioni():
     rows = conn.execute(
         """
         SELECT id, created_at, nome_festeggiato, data_evento, pacchetto,
-               invitati_bambini, invitati_adulti, totale_stimato_eur,
-               slot_key, area_num
+               invitati_bambini, invitati_adulti, totale_stimato_eur
         FROM bookings
         ORDER BY id DESC
         """
@@ -959,6 +846,7 @@ def prenotazione_dettaglio(booking_id: int):
             svc_tot = (TORTA_ESTERNASVC_EUR_PER_PERSON * Decimal(tot_persone)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             torta_info = f"{tot_persone} persone → Servizio torta: €{eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} x {tot_persone} = €{eur(svc_tot)}"
     elif row["pacchetto"] == "Lullyland all-inclusive":
+        # Se hanno scelto torta come dessert, mostriamo solo scelta (nessun prezzo/kg)
         need_torta = (row["dessert_bimbi_choice"] == "torta_compleanno") or (row["dessert_adulti_choice"] == "torta_compleanno")
         if need_torta:
             tc = (row["torta_choice"] or "").strip()
@@ -977,20 +865,12 @@ def prenotazione_dettaglio(booking_id: int):
         else:
             torta_info = "-"
 
-    slot_key = (row["slot_key"] or "").strip()
-    area_num = row["area_num"]
-
-    slot_area_info = "-"
-    if slot_key and area_num:
-        slot_area_info = f"{slot_key} ({lcal.SLOT_LABELS.get(slot_key,'')}) – Area {area_num}"
-
     return render_template_string(
         DETAIL_HTML,
         app_name=APP_NAME,
         b=row,
         tot_persone=tot_persone,
         torta_info=torta_info,
-        slot_area_info=slot_area_info,
     )
 
 
@@ -1038,7 +918,6 @@ HOME_HTML = """
     .card { max-width: 700px; margin: 30px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
     a.btn { display:inline-block; padding:12px 14px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:700; }
     a.btn2 { display:inline-block; padding:12px 14px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:700; margin-left:10px;}
-    a.btn3 { display:inline-block; padding:12px 14px; border-radius:10px; background:#00a86b; color:#fff; text-decoration:none; font-weight:700; margin-left:10px;}
     .muted { color:#666; }
   </style>
 </head>
@@ -1050,7 +929,6 @@ HOME_HTML = """
     <p>
       <a class="btn" href="/prenota">+ Nuova prenotazione</a>
       <a class="btn2" href="/prenotazioni">Vedi prenotazioni</a>
-      <a class="btn3" href="/calendario">Calendario</a>
     </p>
 
     <p><a href="/logout">Esci</a></p>
@@ -1059,112 +937,7 @@ HOME_HTML = """
 </html>
 """
 
-# ✅ Calendario mese
-CALENDAR_HTML = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>{{app_name}} – Calendario</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: Arial, sans-serif; padding: 18px; background:#f6f7fb; }
-    .card { max-width: 1100px; margin: 18px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
-    .top { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; }
-    .nav a { text-decoration:none; font-weight:800; padding:10px 12px; border-radius:10px; background:#111; color:#fff; }
-    .nav a.primary { background:#0a84ff; }
-    table { width:100%; border-collapse: collapse; table-layout: fixed; margin-top:14px; }
-    th, td { border:1px solid #eee; vertical-align:top; padding:8px; }
-    th { background:#f0f2f7; }
-    .daynum { font-weight:900; }
-    .today { outline: 3px solid #0a84ff; }
-    .slot { margin-top:6px; font-size:12px; padding:6px; border-radius:10px; background:#f6f7fb; border:1px solid #e8e8e8; }
-    .badge { display:inline-block; padding:4px 8px; border-radius:999px; background:#111; color:#fff; font-weight:900; font-size:11px; }
-    .muted { color:#666; font-size:12px; }
-    a.link { color:#0a84ff; font-weight:800; text-decoration:none; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="top">
-      <div>
-        <h2>Calendario – {{app_name}}</h2>
-        <div class="muted">Mese: {{month}}/{{year}} • Ogni slot ha Area 1 e Area 2</div>
-      </div>
-      <div class="nav">
-        <a href="/?">Home</a>
-        <a class="primary" href="/prenota">+ Prenota</a>
-        <a href="/prenotazioni">Lista</a>
-        <a href="/calendario?year={{prev_year}}&month={{prev_month}}">←</a>
-        <a href="/calendario?year={{next_year}}&month={{next_month}}">→</a>
-      </div>
-    </div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>Lun</th><th>Mar</th><th>Mer</th><th>Gio</th><th>Ven</th><th>Sab</th><th>Dom</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for week in grid %}
-          <tr>
-            {% for d in week %}
-              {% if d is none %}
-                <td></td>
-              {% else %}
-                {% set ds = d.strftime("%Y-%m-%d") %}
-                {% set is_today = (d == today) %}
-                <td class="{% if is_today %}today{% endif %}">
-                  <div class="daynum">{{d.day}}</div>
-                  <div class="muted">{{ds}}</div>
-
-                  {% set day = idx.get(ds, {}) %}
-
-                  {% for slot_key, slot_label in slot_labels.items() %}
-                    {% set slot_map = day.get(slot_key, {}) %}
-                    
-                      <div class="slot">
-                        <div><span class="badge">{{slot_key}}</span> <span class="muted">{{slot_label}}</span></div>
-                        <div style="margin-top:6px;">
-                          {% for area_num in (1,2) %}
-                            {% set ev = slot_map.get(area_num) %}
-                            {% if ev %}
-                              <div>
-                                <span class="muted">A{{area_num}}:</span>
-                                <a class="link" href="/prenotazioni/{{ev.id}}">{{ev.nome_festeggiato}}</a>
-                                <span class="muted">({{ev.pacchetto}})</span>
-                              </div>
-                            {% else %}
-                              <div class="muted">A{{area_num}}: libero</div>
-                            {% endif %}
-                          {% endfor %}
-                        </div>
-                      </div>
-                    
-                  {% endfor %}
-                </td>
-              {% endif %}
-            {% endfor %}
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</body>
-</html>
-"""
-
-# -------------------------
-# Le tue 3 HTML principali
-# -------------------------
-
-
-# 🔥 Qui sotto rimetto i tuoi template originali COMPLETI.
-# Nota: BOOKING_HTML resta IDENTICO al tuo (non serve modificarlo per far funzionare calendario).
-# LIST_HTML e DETAIL_HTML includono slot_key/area_num e slot_area_info.
-
-BOOKING_HTML = r"""
+BOOKING_HTML = """
 <!doctype html>
 <html>
 <head>
@@ -1202,7 +975,7 @@ BOOKING_HTML = r"""
 <body>
   <div class="card">
     <h2>Modulo prenotazione evento – {{app_name}}</h2>
-    <p><a href="/">← Home</a> | <a href="/calendario">Calendario</a></p>
+    <p><a href="/">← Home</a></p>
 
     {% if error %}<p class="err">{{error}}</p>{% endif %}
 
@@ -1634,7 +1407,7 @@ BOOKING_HTML = r"""
 </html>
 """
 
-LIST_HTML = r"""
+LIST_HTML = """
 <!doctype html>
 <html>
 <head>
@@ -1647,7 +1420,6 @@ LIST_HTML = r"""
     table { width:100%; border-collapse: collapse; }
     th, td { padding: 10px; border-bottom:1px solid #eee; text-align:left; }
     a.btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:800; }
-    a.btn3 { display:inline-block; padding:10px 12px; border-radius:10px; background:#00a86b; color:#fff; text-decoration:none; font-weight:800; margin-left:10px; }
     a.link { color:#0a84ff; font-weight:700; text-decoration:none; }
     .muted { color:#666; }
     .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
@@ -1658,7 +1430,6 @@ LIST_HTML = r"""
     <h2>Prenotazioni – {{app_name}}</h2>
     <p>
       <a class="btn" href="/prenota">+ Nuova prenotazione</a>
-      <a class="btn3" href="/calendario">Calendario</a>
       <span style="margin-left:10px;"><a href="/">Home</a></span>
     </p>
 
@@ -1672,7 +1443,6 @@ LIST_HTML = r"""
             <th>Creato</th>
             <th>Festeggiato</th>
             <th>Data evento</th>
-            <th>Slot/Area</th>
             <th>Pacchetto</th>
             <th>Invitati</th>
             <th>Totale stimato</th>
@@ -1686,13 +1456,6 @@ LIST_HTML = r"""
               <td>{{r['created_at']}}</td>
               <td>{{r['nome_festeggiato']}}</td>
               <td>{{r['data_evento']}}</td>
-              <td>
-                {% if r['slot_key'] and r['area_num'] %}
-                  <span class="pill">{{r['slot_key']}} • A{{r['area_num']}}</span>
-                {% else %}
-                  -
-                {% endif %}
-              </td>
               <td>{{r['pacchetto']}}</td>
               <td>{{(r['invitati_bambini'] or 0)}} bimbi / {{(r['invitati_adulti'] or 0)}} adulti</td>
               <td>
@@ -1713,7 +1476,7 @@ LIST_HTML = r"""
 </html>
 """
 
-DETAIL_HTML = r"""
+DETAIL_HTML = """
 <!doctype html>
 <html>
 <head>
@@ -1745,7 +1508,7 @@ DETAIL_HTML = r"""
 </head>
 <body>
   <div class="card">
-    <p><a href="/prenotazioni">← Prenotazioni</a> | <a href="/">Home</a> | <a href="/calendario">Calendario</a></p>
+    <p><a href="/prenotazioni">← Prenotazioni</a> | <a href="/">Home</a></p>
     <h2>Dettaglio prenotazione #{{b['id']}} – {{app_name}}</h2>
 
     <div class="grid">
@@ -1758,9 +1521,6 @@ DETAIL_HTML = r"""
 
         <div class="k">Data evento</div>
         <div class="v">{{b['data_evento'] or '-'}}</div>
-
-        <div class="k">Slot / Area (calendario)</div>
-        <div class="v">{{slot_area_info}}</div>
 
         <div class="k">Pacchetto</div>
         <div class="v">{{b['pacchetto']}}</div>
