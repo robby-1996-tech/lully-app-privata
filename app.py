@@ -5,6 +5,8 @@ from calendar import monthcalendar, month_name
 
 from flask import Flask, request, redirect, url_for, session, abort, g
 
+from bookings import register_booking_routes  # <-- MODULO EVENTI
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me")
 APP_PIN = os.getenv("APP_PIN", "1234")
@@ -119,7 +121,7 @@ def slots_for_date(d: date):
 
 
 # -------------------------
-# Counts
+# Counts + fetch
 # -------------------------
 def day_total_events(date_iso: str) -> int:
     db = get_db()
@@ -134,11 +136,26 @@ def slot_count(date_iso: str, slot_code: str) -> int:
     ).fetchone()
     return int(r["c"])
 
+def bookings_for_slot(date_iso: str, slot_code: str):
+    db = get_db()
+    return db.execute("""
+        SELECT id, area, child_name, phone, deposit_cents
+        FROM bookings
+        WHERE event_date=? AND slot_code=?
+        ORDER BY area ASC, id ASC
+    """, (date_iso, slot_code)).fetchall()
+
+def cents_to_eur_str(c: int) -> str:
+    c = int(c or 0)
+    sign = "-" if c < 0 else ""
+    c = abs(c)
+    return f"{sign}{c//100},{c%100:02d}"
+
 
 # -------------------------
 # UI helpers
 # -------------------------
-def topbar(active: str = "month"):
+def topbar_html(active: str = "month"):
     return f"""
     <div class="topbar">
       <div class="left">
@@ -173,14 +190,14 @@ BASE_CSS = """
   .open{display:inline-block;margin-top:8px;font-weight:800;text-decoration:none;}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .slot{border:1px solid #ddd;border-radius:14px;background:#fff;padding:12px;margin-top:10px;}
-  .slothead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}
-  .pill{font-size:12px;font-weight:900;padding:4px 8px;border-radius:999px;background:#111;color:#fff;}
+  .slothead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;}
+  .eventline{padding:10px;border-radius:12px;border:1px solid #eee;background:#fcfcfc;margin-top:8px;}
 </style>
 """
 
 
 # -------------------------
-# Calendar Month (mese corrente + scorrimento)
+# Calendar Month
 # -------------------------
 @app.route("/")
 def calendar_month():
@@ -188,7 +205,6 @@ def calendar_month():
     y = int(request.args.get("y", today.year))
     m = int(request.args.get("m", today.month))
 
-    # prev/next month
     prev_y, prev_m = (y - 1, 12) if m == 1 else (y, m - 1)
     next_y, next_m = (y + 1, 1) if m == 12 else (y, m + 1)
 
@@ -219,13 +235,13 @@ def calendar_month():
 <title>{APP_NAME}</title>
 {BASE_CSS}
 </head><body>
-  {topbar('month')}
+  {topbar_html('month')}
 
   <div class="card">
     <div class="head">
       <div>
         <h2 style="margin:0;">{month_name[m]} {y}</h2>
-        <div class="muted">Come iPhone: mese corrente + scorrimento mesi</div>
+        <div class="muted">Mese corrente + scorrimento mesi</div>
       </div>
       <div class="row">
         <a class="btn" href="{url_for('calendar_month', y=prev_y, m=prev_m)}">←</a>
@@ -246,7 +262,7 @@ def calendar_month():
 
 
 # -------------------------
-# Year view (rapida)
+# Year view
 # -------------------------
 @app.route("/year")
 def calendar_year():
@@ -280,7 +296,7 @@ def calendar_year():
 <title>{APP_NAME} – Anno</title>
 {BASE_CSS}
 </head><body>
-  {topbar('year')}
+  {topbar_html('year')}
   <div class="card">
     <div class="head">
       <h2 style="margin:0;">Anno {y}</h2>
@@ -298,7 +314,7 @@ def calendar_year():
 
 
 # -------------------------
-# Day view + "Aggiungi festa"
+# Day view
 # -------------------------
 @app.route("/day/<date_iso>")
 def day_view(date_iso):
@@ -307,19 +323,32 @@ def day_view(date_iso):
     except ValueError:
         abort(404)
 
-    slots = slots_for_date(d)
-
     blocks = ""
-    for s in slots:
+    for s in slots_for_date(d):
         c = slot_count(date_iso, s["code"])
+        events = bookings_for_slot(date_iso, s["code"])
+
+        ev_html = ""
+        if events:
+            lines = []
+            for ev in events:
+                lines.append(f"""
+                  <div class="eventline">
+                    <b>Area {ev['area']}: {ev['child_name'] or '-'}</b>
+                    <div class="muted">Tel: {(ev['phone'] or '-')} · Acconto: € {cents_to_eur_str(ev['deposit_cents'])}</div>
+                  </div>
+                """)
+            ev_html = "".join(lines)
+
         blocks += f"""
         <div class="slot">
           <div class="slothead">
             <div>
               <div style="font-weight:900;">{s['start']}–{s['end']} <span class="muted">({s['label']})</span></div>
               <div class="muted">Prenotazioni nello slot: <b>{c}/2</b></div>
+              {ev_html}
             </div>
-            <a class="btn primary" href="{url_for('booking_new')}?date={date_iso}&slot={s['code']}">➕ Aggiungi festa</a>
+            <a class="btn primary" href="{url_for('booking_new')}?date={date_iso}&slot={s['code']}">➕ Aggiungi evento</a>
           </div>
         </div>
         """
@@ -330,12 +359,12 @@ def day_view(date_iso):
 <title>{APP_NAME} – Giorno</title>
 {BASE_CSS}
 </head><body>
-  {topbar('month')}
+  {topbar_html('month')}
   <div class="card">
     <div class="head">
       <div>
         <h2 style="margin:0;">{d.strftime('%A %d %B %Y')}</h2>
-        <div class="muted">Scegli lo slot e aggiungi la festa (stile “+” iPhone)</div>
+        <div class="muted">Scegli lo slot e aggiungi l’evento</div>
       </div>
       <a class="btn" href="{url_for('calendar_month', y=d.year, m=d.month)}">← Torna al mese</a>
     </div>
@@ -346,39 +375,15 @@ def day_view(date_iso):
 
 
 # -------------------------
-# Booking placeholder (poi agganciamo il software completo)
+# Collego il modulo prenotazioni/eventi
 # -------------------------
-@app.route("/booking/new")
-def booking_new():
-    date_iso = request.args.get("date")
-    slot = request.args.get("slot")
-    if not date_iso or not slot:
-        abort(400)
-
-    return f"""<!doctype html>
-<html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{APP_NAME} – Nuova festa</title>
-{BASE_CSS}
-</head><body>
-  {topbar('month')}
-  <div class="card">
-    <h2 style="margin:0;">Nuova festa</h2>
-    <div class="muted" style="margin-top:6px;">Data: <b>{date_iso}</b> · Slot: <b>{slot}</b></div>
-
-    <div style="margin-top:12px;">
-      <span class="pill">STEP SUCCESSIVO</span>
-      <div class="muted" style="margin-top:8px;">
-        Qui agganciamo il software di prenotazione completo (nome bimbo, età, tema, pacchetto, telefono, acconto, ecc.)
-      </div>
-    </div>
-
-    <div style="margin-top:12px;">
-      <a class="btn" href="{url_for('day_view', date_iso=date_iso)}">← Annulla</a>
-    </div>
-  </div>
-</body></html>
-"""
+register_booking_routes(
+    app=app,
+    get_db=get_db,
+    topbar_html=topbar_html,
+    base_css=BASE_CSS,
+    slots_for_date=slots_for_date
+)
 
 
 if __name__ == "__main__":
