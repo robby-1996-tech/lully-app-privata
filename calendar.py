@@ -18,6 +18,8 @@ import sqlite3
 SLOT_MATTINA = "mattina"
 SLOT_SERA = "sera"
 
+VALID_SLOTS = {SLOT_MATTINA, SLOT_SERA}
+
 # Orari (solo testo, utile per UI)
 SLOT_LABELS = {
     SLOT_MATTINA: "09:30–12:30",
@@ -42,23 +44,53 @@ def ensure_calendar_columns(conn: sqlite3.Connection) -> None:
     Aggiunge colonne a 'bookings' se non esistono:
     - slot_key: 'mattina'/'sera'
     - area_num: 1/2
+    Nota: funziona anche se conn.row_factory NON è sqlite3.Row.
     """
-    cols = [r["name"] for r in conn.execute("PRAGMA table_info(bookings)").fetchall()]
+    cols = []
+    for r in conn.execute("PRAGMA table_info(bookings)").fetchall():
+        # r può essere sqlite3.Row oppure tuple
+        try:
+            cols.append(r["name"])
+        except Exception:
+            # PRAGMA table_info: (cid, name, type, notnull, dflt_value, pk)
+            cols.append(r[1])
+
     if "slot_key" not in cols:
         conn.execute("ALTER TABLE bookings ADD COLUMN slot_key TEXT")
     if "area_num" not in cols:
         conn.execute("ALTER TABLE bookings ADD COLUMN area_num INTEGER")
+
     conn.commit()
 
 
 def parse_iso_date(s: str) -> Optional[date]:
+    """
+    Accetta:
+    - 'YYYY-MM-DD'
+    - 'YYYY-MM-DDTHH:MM:SS'
+    - 'YYYY-MM-DD HH:MM:SS'
+    """
     s = (s or "").strip()
     if not s:
         return None
+
+    # se arriva con ora, taglia
+    if "T" in s:
+        s = s.split("T", 1)[0].strip()
+    if " " in s:
+        s = s.split(" ", 1)[0].strip()
+
     try:
         return datetime.strptime(s, "%Y-%m-%d").date()
     except Exception:
         return None
+
+
+def normalize_slot_key(slot_key: Optional[str]) -> Optional[str]:
+    if not slot_key:
+        return None
+    sk = slot_key.strip().lower()
+    return sk if sk in VALID_SLOTS else None
 
 
 # -------------------------
@@ -66,6 +98,12 @@ def parse_iso_date(s: str) -> Optional[date]:
 # -------------------------
 
 def _get_used_areas(conn: sqlite3.Connection, data_evento: str, slot_key: str) -> List[int]:
+    """
+    Ritorna le aree già occupate (SOLO 1 o 2) per quella data+slot.
+    Ignora valori strani tipo 0, 3, stringhe, ecc.
+    """
+    slot_key = normalize_slot_key(slot_key) or slot_key
+
     rows = conn.execute(
         """
         SELECT area_num
@@ -76,10 +114,15 @@ def _get_used_areas(conn: sqlite3.Connection, data_evento: str, slot_key: str) -
         """,
         (data_evento, slot_key),
     ).fetchall()
-    used = []
+
+    used: List[int] = []
     for r in rows:
         try:
-            used.append(int(r["area_num"]))
+            # r può essere Row o tuple
+            v = r["area_num"] if hasattr(r, "keys") else r[0]
+            a = int(v)
+            if a in (1, 2):
+                used.append(a)
         except Exception:
             pass
     return used
@@ -111,11 +154,13 @@ def auto_assign_slot_and_area(
 
     valid_slots = slots_for_date(d)
 
+    pref = normalize_slot_key(preferred_slot)
+
     # 1) Se l'utente fornisce uno slot preferito (in futuro), proviamolo
-    if preferred_slot and preferred_slot in valid_slots:
-        area = find_first_available_area(conn, data_evento, preferred_slot)
+    if pref and pref in valid_slots:
+        area = find_first_available_area(conn, data_evento, pref)
         if area is not None:
-            return preferred_slot, area
+            return pref, area
 
     # 2) Altrimenti scegliamo il primo slot disponibile
     for slot in valid_slots:
@@ -146,11 +191,20 @@ class CalendarEvent:
 
 
 def _row_to_event(r: sqlite3.Row) -> CalendarEvent:
+    # slot_key normalizzato per evitare 'SERA'/'sera ' ecc.
+    sk = normalize_slot_key((r["slot_key"] or "")) or (r["slot_key"] or "")
+
+    # area_num: garantiamo int
+    try:
+        an = int(r["area_num"] or 0)
+    except Exception:
+        an = 0
+
     return CalendarEvent(
         id=int(r["id"]),
         data_evento=(r["data_evento"] or ""),
-        slot_key=(r["slot_key"] or ""),
-        area_num=int(r["area_num"] or 0),
+        slot_key=sk,
+        area_num=an,
         nome_festeggiato=(r["nome_festeggiato"] or ""),
         eta_festeggiato=int(r["eta_festeggiato"]) if r["eta_festeggiato"] not in (None, "") else None,
         invitati_bambini=int(r["invitati_bambini"] or 0),
@@ -197,7 +251,10 @@ def build_calendar_index(
     """
     idx: Dict[str, Dict[str, Dict[int, CalendarEvent]]] = {}
     for e in events:
-        idx.setdefault(e.data_evento, {}).setdefault(e.slot_key, {})[e.area_num] = e
+        if not e.data_evento:
+            continue
+        sk = normalize_slot_key(e.slot_key) or e.slot_key
+        idx.setdefault(e.data_evento, {}).setdefault(sk, {})[e.area_num] = e
     return idx
 
 
@@ -250,4 +307,5 @@ def short_event_text(e: CalendarEvent) -> str:
 
 
 def slot_title(slot_key: str) -> str:
-    return f"{slot_key.capitalize()} {SLOT_LABELS.get(slot_key, '')}".strip()
+    sk = normalize_slot_key(slot_key) or slot_key
+    return f"{sk.capitalize()} {SLOT_LABELS.get(sk, '')}".strip()
