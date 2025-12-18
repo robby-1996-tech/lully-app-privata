@@ -1,5 +1,22 @@
 import os
 import sqlite3
+
+import importlib.util
+from pathlib import Path
+
+def load_local_calendar_module():
+    here = Path(__file__).resolve().parent
+    cal_path = here / "calendar.py"
+    if not cal_path.exists():
+        raise RuntimeError(f"calendar.py non trovato in {here}")
+    spec = importlib.util.spec_from_file_location("lully_calendar", str(cal_path))
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+lcal = load_local_calendar_module()
+
 from datetime import datetime, date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
