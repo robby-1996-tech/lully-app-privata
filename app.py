@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import traceback
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -85,7 +86,7 @@ EXTRA_SERVIZI_ALL_INCLUSIVE = {
 
 
 # -------------------------
-# Date manuali (NO calendari)
+# Date manuali: parse e normalizza
 # -------------------------
 def parse_manual_date(value: str):
     """
@@ -104,7 +105,6 @@ def parse_manual_date(value: str):
             return d.isoformat()
         except ValueError:
             pass
-
     return None
 
 
@@ -543,13 +543,11 @@ def prenota():
                 if request.form.get(f"extra_{k}"):
                     extra_keys.append(k)
 
-        # --- DATE MANUALI: normalizzazione + validazione ---
-        data_evento_raw = (request.form.get("data_evento") or "").strip()
+        # ---- DATE: validate + normalize ----
         data_compleanno_raw = (request.form.get("data_compleanno") or "").strip()
+        data_evento_raw = (request.form.get("data_evento") or "").strip()
 
         data_evento_norm = parse_manual_date(data_evento_raw)
-        data_compleanno_norm = parse_manual_date(data_compleanno_raw) if data_compleanno_raw else ""
-
         if not data_evento_norm:
             return render_template_string(
                 BOOKING_HTML,
@@ -565,20 +563,23 @@ def prenota():
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
             )
 
-        if data_compleanno_raw and not data_compleanno_norm:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Data compleanno non valida: usa GG/MM/AAAA oppure AAAA-MM-GG.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-                package_labels=PACKAGE_LABELS,
-                catering_baby_options=CATERING_BABY_OPTIONS,
-                dessert_options=DESSERT_OPTIONS,
-                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
-                extra_servizi=EXTRA_SERVIZI,
-                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
-            )
+        data_compleanno_norm = ""
+        if data_compleanno_raw:
+            data_compleanno_norm = parse_manual_date(data_compleanno_raw)
+            if not data_compleanno_norm:
+                return render_template_string(
+                    BOOKING_HTML,
+                    app_name=APP_NAME,
+                    error="Data compleanno non valida: usa GG/MM/AAAA oppure AAAA-MM-GG.",
+                    today=datetime.now().strftime("%Y-%m-%d"),
+                    form=request.form,
+                    package_labels=PACKAGE_LABELS,
+                    catering_baby_options=CATERING_BABY_OPTIONS,
+                    dessert_options=DESSERT_OPTIONS,
+                    torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                    extra_servizi=EXTRA_SERVIZI,
+                    extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                )
 
         payload = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -586,7 +587,7 @@ def prenota():
             "nome_festeggiato": (request.form.get("nome_festeggiato") or "").strip(),
             "eta_festeggiato": to_int(request.form.get("eta_festeggiato")),
 
-            # salvate NORMALIZZATE
+            # salvate normalizzate come YYYY-MM-DD
             "data_compleanno": data_compleanno_norm,
             "data_evento": data_evento_norm,
 
@@ -734,7 +735,9 @@ def prenota():
                     )
 
         if payload["pacchetto"] == "Lullyland all-inclusive":
-            need_torta = (payload["dessert_bimbi_choice"] == "torta_compleanno") or (payload["dessert_adulti_choice"] == "torta_compleanno")
+            need_torta = (payload["dessert_bimbi_choice"] == "torta_compleanno") or (
+                payload["dessert_adulti_choice"] == "torta_compleanno"
+            )
             if need_torta:
                 if payload["torta_choice"] not in ("esterna", "interna"):
                     return render_template_string(
@@ -783,61 +786,86 @@ def prenota():
         totals = compute_totals(payload)
         contract_text = build_contract_text(payload)
 
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO bookings (
-                created_at,
-                nome_festeggiato, eta_festeggiato, data_compleanno, data_evento,
-                madre_nome_cognome, madre_telefono,
-                padre_nome_cognome, padre_telefono,
-                indirizzo_residenza, email,
-                invitati_bambini, invitati_adulti,
-                pacchetto, tema_evento, note,
-                data_firma, firma_png_base64,
-                consenso_privacy, consenso_foto,
-                acconto_eur,
-                pacchetto_personalizzato_dettagli,
-                catering_baby_choice,
-                dessert_bimbi_choice,
-                dessert_adulti_choice,
-                torta_choice, torta_interna_choice, torta_gusto_altro,
-                extra_keys_csv,
-                totale_stimato_eur,
-                dettagli_contratto_text
-            ) VALUES (
-                :created_at,
-                :nome_festeggiato, :eta_festeggiato, :data_compleanno, :data_evento,
-                :madre_nome_cognome, :madre_telefono,
-                :padre_nome_cognome, :padre_telefono,
-                :indirizzo_residenza, :email,
-                :invitati_bambini, :invitati_adulti,
-                :pacchetto, :tema_evento, :note,
-                :data_firma, :firma_png_base64,
-                :consenso_privacy, :consenso_foto,
-                :acconto_eur,
-                :pacchetto_personalizzato_dettagli,
-                :catering_baby_choice,
-                :dessert_bimbi_choice,
-                :dessert_adulti_choice,
-                :torta_choice, :torta_interna_choice, :torta_gusto_altro,
-                :extra_keys_csv,
-                :totale_stimato_eur,
-                :dettagli_contratto_text
+        # --- Salvataggio con debug errore (niente più 500 "muto") ---
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO bookings (
+                    created_at,
+                    nome_festeggiato, eta_festeggiato, data_compleanno, data_evento,
+                    madre_nome_cognome, madre_telefono,
+                    padre_nome_cognome, padre_telefono,
+                    indirizzo_residenza, email,
+                    invitati_bambini, invitati_adulti,
+                    pacchetto, tema_evento, note,
+                    data_firma, firma_png_base64,
+                    consenso_privacy, consenso_foto,
+                    acconto_eur,
+                    pacchetto_personalizzato_dettagli,
+                    catering_baby_choice,
+                    dessert_bimbi_choice,
+                    dessert_adulti_choice,
+                    torta_choice, torta_interna_choice, torta_gusto_altro,
+                    extra_keys_csv,
+                    totale_stimato_eur,
+                    dettagli_contratto_text
+                ) VALUES (
+                    :created_at,
+                    :nome_festeggiato, :eta_festeggiato, :data_compleanno, :data_evento,
+                    :madre_nome_cognome, :madre_telefono,
+                    :padre_nome_cognome, :padre_telefono,
+                    :indirizzo_residenza, :email,
+                    :invitati_bambini, :invitati_adulti,
+                    :pacchetto, :tema_evento, :note,
+                    :data_firma, :firma_png_base64,
+                    :consenso_privacy, :consenso_foto,
+                    :acconto_eur,
+                    :pacchetto_personalizzato_dettagli,
+                    :catering_baby_choice,
+                    :dessert_bimbi_choice,
+                    :dessert_adulti_choice,
+                    :torta_choice, :torta_interna_choice, :torta_gusto_altro,
+                    :extra_keys_csv,
+                    :totale_stimato_eur,
+                    :dettagli_contratto_text
+                )
+                """,
+                {
+                    **payload,
+                    "extra_keys_csv": ",".join(payload["extra_keys"]),
+                    "totale_stimato_eur": str(totals["totale"]),
+                    "dettagli_contratto_text": contract_text,
+                },
             )
-            """,
-            {
-                **payload,
-                "extra_keys_csv": ",".join(payload["extra_keys"]),
-                "totale_stimato_eur": str(totals["totale"]),
-                "dettagli_contratto_text": contract_text,
-            },
-        )
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
+            return redirect(url_for("prenotazioni"))
 
-        return redirect(url_for("prenotazioni"))
+        except Exception as e:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+            tb = traceback.format_exc()
+            return (
+                render_template_string(
+                    BOOKING_HTML,
+                    app_name=APP_NAME,
+                    error=f"ERRORE SERVER (salvataggio): {e}",
+                    today=datetime.now().strftime("%Y-%m-%d"),
+                    form=request.form,
+                    package_labels=PACKAGE_LABELS,
+                    catering_baby_options=CATERING_BABY_OPTIONS,
+                    dessert_options=DESSERT_OPTIONS,
+                    torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                    extra_servizi=EXTRA_SERVIZI,
+                    extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                )
+                + f"<pre style='white-space:pre-wrap;max-width:860px;margin:10px auto;background:#fff;border:1px solid #eee;padding:12px;border-radius:12px;'>{tb}</pre>"
+            )
 
     return render_template_string(
         BOOKING_HTML,
@@ -1046,18 +1074,20 @@ BOOKING_HTML = r"""
 
       <div class="row">
         <div class="col">
-          <label>Data del compleanno (manuale)</label>
-          <input type="text" name="data_compleanno"
-                 placeholder="GG/MM/AAAA oppure AAAA-MM-GG"
+          <label>Data del compleanno (scrivi solo numeri)</label>
+          <input type="text" id="data_compleanno" name="data_compleanno"
+                 inputmode="numeric"
+                 placeholder="GG/MM/AAAA (es. 05052026)"
                  value="{{form.get('data_compleanno','')}}" />
-          <div class="hint">Esempio: 18/12/2025 oppure 2025-12-18</div>
+          <div class="hint">Scrivi: 05052026 → diventa 05/05/2026</div>
         </div>
         <div class="col">
-          <label>Data dell'evento (manuale) *</label>
-          <input type="text" name="data_evento"
-                 placeholder="GG/MM/AAAA oppure AAAA-MM-GG"
+          <label>Data dell'evento (scrivi solo numeri) *</label>
+          <input type="text" id="data_evento" name="data_evento"
+                 inputmode="numeric"
+                 placeholder="GG/MM/AAAA (es. 05052026)"
                  value="{{form.get('data_evento','')}}" />
-          <div class="hint">Esempio: 18/12/2025 oppure 2025-12-18</div>
+          <div class="hint">Scrivi: 05052026 → diventa 05/05/2026</div>
         </div>
       </div>
 
@@ -1323,6 +1353,18 @@ BOOKING_HTML = r"""
 
 <script>
 (function() {
+  // ---- maschera data: scrivi 05052026 -> 05/05/2026 ----
+  function applyDateMask(input) {
+    if (!input) return;
+    input.addEventListener('input', function() {
+      let v = this.value.replace(/\D/g, '').slice(0, 8); // ddmmyyyy
+      let out = v;
+      if (v.length >= 3) out = v.slice(0,2) + '/' + v.slice(2);
+      if (v.length >= 5) out = v.slice(0,2) + '/' + v.slice(2,4) + '/' + v.slice(4);
+      this.value = out;
+    });
+  }
+
   const pacchetto = document.getElementById('pacchetto');
   const experienceBox = document.getElementById('experienceBox');
   const allInclusiveBox = document.getElementById('allInclusiveBox');
@@ -1375,6 +1417,10 @@ BOOKING_HTML = r"""
   if (tortaInternaChoiceAI) tortaInternaChoiceAI.addEventListener('change', refreshVisibility);
 
   refreshVisibility();
+
+  // attiva maschera data
+  applyDateMask(document.getElementById('data_compleanno'));
+  applyDateMask(document.getElementById('data_evento'));
 
   const canvas = document.getElementById('sigCanvas');
   const ctx = canvas.getContext('2d');
