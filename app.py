@@ -85,6 +85,30 @@ EXTRA_SERVIZI_ALL_INCLUSIVE = {
 
 
 # -------------------------
+# Date manuali (NO calendari)
+# -------------------------
+def parse_manual_date(value: str):
+    """
+    Accetta:
+      - YYYY-MM-DD (es. 2025-12-18)
+      - DD/MM/YYYY (es. 18/12/2025)
+    Ritorna 'YYYY-MM-DD' oppure None.
+    """
+    if not value:
+        return None
+
+    v = value.strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            d = datetime.strptime(v, fmt).date()
+            return d.isoformat()
+        except ValueError:
+            pass
+
+    return None
+
+
+# -------------------------
 # DB helpers
 # -------------------------
 def get_db():
@@ -519,13 +543,52 @@ def prenota():
                 if request.form.get(f"extra_{k}"):
                     extra_keys.append(k)
 
+        # --- DATE MANUALI: normalizzazione + validazione ---
+        data_evento_raw = (request.form.get("data_evento") or "").strip()
+        data_compleanno_raw = (request.form.get("data_compleanno") or "").strip()
+
+        data_evento_norm = parse_manual_date(data_evento_raw)
+        data_compleanno_norm = parse_manual_date(data_compleanno_raw) if data_compleanno_raw else ""
+
+        if not data_evento_norm:
+            return render_template_string(
+                BOOKING_HTML,
+                app_name=APP_NAME,
+                error="Data evento non valida: usa GG/MM/AAAA oppure AAAA-MM-GG.",
+                today=datetime.now().strftime("%Y-%m-%d"),
+                form=request.form,
+                package_labels=PACKAGE_LABELS,
+                catering_baby_options=CATERING_BABY_OPTIONS,
+                dessert_options=DESSERT_OPTIONS,
+                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                extra_servizi=EXTRA_SERVIZI,
+                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+            )
+
+        if data_compleanno_raw and not data_compleanno_norm:
+            return render_template_string(
+                BOOKING_HTML,
+                app_name=APP_NAME,
+                error="Data compleanno non valida: usa GG/MM/AAAA oppure AAAA-MM-GG.",
+                today=datetime.now().strftime("%Y-%m-%d"),
+                form=request.form,
+                package_labels=PACKAGE_LABELS,
+                catering_baby_options=CATERING_BABY_OPTIONS,
+                dessert_options=DESSERT_OPTIONS,
+                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                extra_servizi=EXTRA_SERVIZI,
+                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+            )
+
         payload = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
 
             "nome_festeggiato": (request.form.get("nome_festeggiato") or "").strip(),
             "eta_festeggiato": to_int(request.form.get("eta_festeggiato")),
-            "data_compleanno": (request.form.get("data_compleanno") or "").strip(),
-            "data_evento": (request.form.get("data_evento") or "").strip(),
+
+            # salvate NORMALIZZATE
+            "data_compleanno": data_compleanno_norm,
+            "data_evento": data_evento_norm,
 
             "madre_nome_cognome": (request.form.get("madre_nome_cognome") or "").strip(),
             "madre_telefono": (request.form.get("madre_telefono") or "").strip(),
@@ -569,21 +632,6 @@ def prenota():
                 BOOKING_HTML,
                 app_name=APP_NAME,
                 error="Inserisci il nome del festeggiato.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-                package_labels=PACKAGE_LABELS,
-                catering_baby_options=CATERING_BABY_OPTIONS,
-                dessert_options=DESSERT_OPTIONS,
-                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
-                extra_servizi=EXTRA_SERVIZI,
-                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
-            )
-
-        if not payload["data_evento"]:
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Seleziona la data dell'evento.",
                 today=datetime.now().strftime("%Y-%m-%d"),
                 form=request.form,
                 package_labels=PACKAGE_LABELS,
@@ -998,12 +1046,18 @@ BOOKING_HTML = r"""
 
       <div class="row">
         <div class="col">
-          <label>Data del compleanno</label>
-          <input type="date" name="data_compleanno" value="{{form.get('data_compleanno','')}}" />
+          <label>Data del compleanno (manuale)</label>
+          <input type="text" name="data_compleanno"
+                 placeholder="GG/MM/AAAA oppure AAAA-MM-GG"
+                 value="{{form.get('data_compleanno','')}}" />
+          <div class="hint">Esempio: 18/12/2025 oppure 2025-12-18</div>
         </div>
         <div class="col">
-          <label>Data dell'evento</label>
-          <input type="date" name="data_evento" value="{{form.get('data_evento','')}}" />
+          <label>Data dell'evento (manuale) *</label>
+          <input type="text" name="data_evento"
+                 placeholder="GG/MM/AAAA oppure AAAA-MM-GG"
+                 value="{{form.get('data_evento','')}}" />
+          <div class="hint">Esempio: 18/12/2025 oppure 2025-12-18</div>
         </div>
       </div>
 
