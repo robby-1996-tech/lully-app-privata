@@ -5,7 +5,7 @@ from calendar import monthcalendar, month_name
 
 from flask import Flask, request, redirect, url_for, session, abort, g
 
-from bookings import register_booking_routes  # <-- MODULO EVENTI
+from bookings import register_booking_routes
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me")
@@ -31,24 +31,81 @@ def close_db(_):
 
 def init_db():
     db = get_db()
+
+    # Tabella calendario/slot (nuova)
     db.execute("""
     CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL,
+
         event_date TEXT NOT NULL,        -- YYYY-MM-DD
         slot_code TEXT NOT NULL,         -- MORNING / AFTERNOON
         start_time TEXT NOT NULL,
         end_time TEXT NOT NULL,
+
         area INTEGER NOT NULL,           -- 1/2/3...
         child_name TEXT DEFAULT '',
         phone TEXT DEFAULT '',
-        deposit_cents INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL
+        deposit_cents INTEGER DEFAULT 0
     )
     """)
     db.execute("""
     CREATE INDEX IF NOT EXISTS idx_bookings_date_slot
     ON bookings(event_date, slot_code)
     """)
+
+    # Tabella dettagli (il tuo “software”)
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS booking_details (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL UNIQUE,
+
+        nome_festeggiato TEXT,
+        eta_festeggiato INTEGER,
+
+        madre_nome_cognome TEXT,
+        madre_telefono TEXT,
+
+        padre_nome_cognome TEXT,
+        padre_telefono TEXT,
+
+        indirizzo_residenza TEXT,
+        email TEXT,
+
+        invitati_bambini INTEGER,
+        invitati_adulti INTEGER,
+
+        pacchetto TEXT,
+        tema_evento TEXT,
+        note TEXT,
+
+        data_firma TEXT,
+        firma_png_base64 TEXT,
+
+        consenso_privacy INTEGER,
+        consenso_foto INTEGER,
+
+        acconto_eur TEXT,
+        pacchetto_personalizzato_dettagli TEXT,
+
+        catering_baby_choice TEXT,
+
+        torta_choice TEXT,
+        torta_interna_choice TEXT,
+        torta_gusto_altro TEXT,
+
+        dessert_bimbi_choice TEXT,
+        dessert_adulti_choice TEXT,
+
+        extra_keys_csv TEXT,
+
+        totale_stimato_eur TEXT,
+        dettagli_contratto_text TEXT,
+
+        FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+    )
+    """)
+
     db.commit()
 
 
@@ -121,7 +178,7 @@ def slots_for_date(d: date):
 
 
 # -------------------------
-# Counts + fetch
+# Helpers
 # -------------------------
 def day_total_events(date_iso: str) -> int:
     db = get_db()
@@ -136,31 +193,13 @@ def slot_count(date_iso: str, slot_code: str) -> int:
     ).fetchone()
     return int(r["c"])
 
-def bookings_for_slot(date_iso: str, slot_code: str):
-    db = get_db()
-    return db.execute("""
-        SELECT id, area, child_name, phone, deposit_cents
-        FROM bookings
-        WHERE event_date=? AND slot_code=?
-        ORDER BY area ASC, id ASC
-    """, (date_iso, slot_code)).fetchall()
-
-def cents_to_eur_str(c: int) -> str:
-    c = int(c or 0)
-    sign = "-" if c < 0 else ""
-    c = abs(c)
-    return f"{sign}{c//100},{c%100:02d}"
-
-
-# -------------------------
-# UI helpers
-# -------------------------
-def topbar_html(active: str = "month"):
+def topbar(active: str = "month"):
     return f"""
     <div class="topbar">
       <div class="left">
         <a class="btn {'primary' if active=='month' else ''}" href="{url_for('calendar_month')}">📆 Calendario</a>
         <a class="btn {'primary' if active=='year' else ''}" href="{url_for('calendar_year')}">🗓️ Anno</a>
+        <a class="btn" href="{url_for('events_list')}">📋 Eventi</a>
       </div>
       <div class="right">
         <a class="btn" href="{url_for('logout')}">Esci</a>
@@ -192,12 +231,14 @@ BASE_CSS = """
   .slot{border:1px solid #ddd;border-radius:14px;background:#fff;padding:12px;margin-top:10px;}
   .slothead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;}
   .eventline{padding:10px;border-radius:12px;border:1px solid #eee;background:#fcfcfc;margin-top:8px;}
+  table{width:100%;border-collapse:collapse;}
+  th,td{padding:10px;border-bottom:1px solid #eee;text-align:left;}
 </style>
 """
 
 
 # -------------------------
-# Calendar Month
+# Month view
 # -------------------------
 @app.route("/")
 def calendar_month():
@@ -235,13 +276,13 @@ def calendar_month():
 <title>{APP_NAME}</title>
 {BASE_CSS}
 </head><body>
-  {topbar_html('month')}
+  {topbar('month')}
 
   <div class="card">
     <div class="head">
       <div>
         <h2 style="margin:0;">{month_name[m]} {y}</h2>
-        <div class="muted">Mese corrente + scorrimento mesi</div>
+        <div class="muted">Mese corrente + scorrimento</div>
       </div>
       <div class="row">
         <a class="btn" href="{url_for('calendar_month', y=prev_y, m=prev_m)}">←</a>
@@ -270,14 +311,14 @@ def calendar_year():
     y = int(request.args.get("y", today.year))
 
     months = []
+    db = get_db()
     for mm in range(1, 13):
-        start = date(y, mm, 1)
-        end = date(y + 1, 1, 1) if mm == 12 else date(y, mm + 1, 1)
-        db = get_db()
+        start = date(y, mm, 1).isoformat()
+        end = (date(y + 1, 1, 1) if mm == 12 else date(y, mm + 1, 1)).isoformat()
         c = db.execute("""
-          SELECT COUNT(*) AS c FROM bookings
-          WHERE event_date >= ? AND event_date < ?
-        """, (start.isoformat(), end.isoformat())).fetchone()["c"]
+            SELECT COUNT(*) AS c FROM bookings
+            WHERE event_date >= ? AND event_date < ?
+        """, (start, end)).fetchone()["c"]
         months.append((mm, int(c)))
 
     cards = ""
@@ -296,7 +337,7 @@ def calendar_year():
 <title>{APP_NAME} – Anno</title>
 {BASE_CSS}
 </head><body>
-  {topbar_html('year')}
+  {topbar('year')}
   <div class="card">
     <div class="head">
       <h2 style="margin:0;">Anno {y}</h2>
@@ -323,22 +364,34 @@ def day_view(date_iso):
     except ValueError:
         abort(404)
 
+    db = get_db()
+
     blocks = ""
     for s in slots_for_date(d):
         c = slot_count(date_iso, s["code"])
-        events = bookings_for_slot(date_iso, s["code"])
+
+        events = db.execute("""
+            SELECT b.id, b.area, b.child_name, b.phone,
+                   d.eta_festeggiato, d.invitati_bambini, d.invitati_adulti, d.tema_evento, d.pacchetto
+            FROM bookings b
+            LEFT JOIN booking_details d ON d.booking_id = b.id
+            WHERE b.event_date=? AND b.slot_code=?
+            ORDER BY b.area ASC, b.id ASC
+        """, (date_iso, s["code"])).fetchall()
 
         ev_html = ""
         if events:
-            lines = []
             for ev in events:
-                lines.append(f"""
+                ev_html += f"""
                   <div class="eventline">
                     <b>Area {ev['area']}: {ev['child_name'] or '-'}</b>
-                    <div class="muted">Tel: {(ev['phone'] or '-')} · Acconto: € {cents_to_eur_str(ev['deposit_cents'])}</div>
+                    <div class="muted">{(ev['eta_festeggiato'] or '-')} anni · {(ev['invitati_bambini'] or 0)} bimbi / {(ev['invitati_adulti'] or 0)} adulti</div>
+                    <div class="muted">Tema: {(ev['tema_evento'] or '-')} · Pacchetto: {(ev['pacchetto'] or '-')}</div>
+                    <div class="row" style="margin-top:8px;">
+                      <a class="btn" href="{url_for('event_detail', booking_id=ev['id'])}">Apri</a>
+                    </div>
                   </div>
-                """)
-            ev_html = "".join(lines)
+                """
 
         blocks += f"""
         <div class="slot">
@@ -359,12 +412,12 @@ def day_view(date_iso):
 <title>{APP_NAME} – Giorno</title>
 {BASE_CSS}
 </head><body>
-  {topbar_html('month')}
+  {topbar('month')}
   <div class="card">
     <div class="head">
       <div>
         <h2 style="margin:0;">{d.strftime('%A %d %B %Y')}</h2>
-        <div class="muted">Scegli lo slot e aggiungi l’evento</div>
+        <div class="muted">Seleziona slot e aggiungi evento</div>
       </div>
       <a class="btn" href="{url_for('calendar_month', y=d.year, m=d.month)}">← Torna al mese</a>
     </div>
@@ -375,16 +428,69 @@ def day_view(date_iso):
 
 
 # -------------------------
-# Collego il modulo prenotazioni/eventi
+# Event list (facoltativa ma utile)
 # -------------------------
+@app.route("/events")
+def events_list():
+    db = get_db()
+    rows = db.execute("""
+        SELECT b.id, b.event_date, b.slot_code, b.start_time, b.end_time, b.area, b.child_name,
+               d.pacchetto
+        FROM bookings b
+        LEFT JOIN booking_details d ON d.booking_id=b.id
+        ORDER BY b.event_date DESC, b.start_time DESC, b.area ASC
+        LIMIT 300
+    """).fetchall()
+
+    tr = ""
+    for r in rows:
+        tr += f"""
+          <tr>
+            <td>{r['id']}</td>
+            <td>{r['event_date']}</td>
+            <td>{r['start_time']}-{r['end_time']}</td>
+            <td>Area {r['area']}</td>
+            <td>{r['child_name'] or '-'}</td>
+            <td>{r['pacchetto'] or '-'}</td>
+            <td><a class="btn" href="{url_for('event_detail', booking_id=r['id'])}">Apri</a></td>
+          </tr>
+        """
+
+    return f"""<!doctype html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{APP_NAME} – Eventi</title>
+{BASE_CSS}
+</head><body>
+  {topbar('month')}
+  <div class="card">
+    <div class="head">
+      <h2 style="margin:0;">Eventi</h2>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>Data</th><th>Orario</th><th>Area</th><th>Festeggiato</th><th>Pacchetto</th><th></th></tr></thead>
+      <tbody>{tr}</tbody>
+    </table>
+  </div>
+</body></html>
+"""
+
+
+# -------------------------
+# Route dettagli evento = dal modulo bookings.py
+# -------------------------
+# booking_new: /booking/new
+# event_detail: /events/<id>
+
+
+# Collego il tuo software come modulo
 register_booking_routes(
     app=app,
     get_db=get_db,
-    topbar_html=topbar_html,
+    topbar=topbar,
     base_css=BASE_CSS,
     slots_for_date=slots_for_date
 )
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
