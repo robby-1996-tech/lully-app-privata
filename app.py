@@ -1,8 +1,10 @@
 import os
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from calendar import monthcalendar, month_name
+import io
+import base64
 
 from flask import (
     Flask,
@@ -12,18 +14,26 @@ from flask import (
     session,
     render_template_string,
     abort,
+    send_file,
 )
+
+# PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas as pdfcanvas
+from reportlab.lib.units import cm
+from reportlab.lib.utils import ImageReader
 
 app = Flask(__name__)
 
 APP_NAME = "Lullyland"
 app.secret_key = os.getenv("SECRET_KEY", "dev-secret-key-change-me")
 APP_PIN = os.getenv("APP_PIN", "1234")
+
 DB_PATH = os.getenv("DB_PATH", "lullyland.db")
 
 
 # -------------------------
-# Cataloghi e prezzi (TUOI)
+# Cataloghi e prezzi
 # -------------------------
 PACKAGE_PRICES_EUR = {
     "Fai da Te": Decimal("15.00"),
@@ -46,7 +56,7 @@ CATERING_BABY_OPTIONS = {
 
 TORTA_PRICE_EUR_PER_KG = Decimal("24.00")
 TORTA_ESTERNASVC_EUR_PER_PERSON = Decimal("1.00")
-KG_PER_PERSON = Decimal("0.10")
+KG_PER_PERSON = Decimal("0.10")  # 100g a testa
 
 TORTA_INTERNA_FLAVORS = {
     "standard": "Pan di spagna analcolico con crema chantilly e gocce di cioccolato",
@@ -94,17 +104,19 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
 
-    # tua tabella originale (rimane)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT,
 
+            event_date TEXT,
+            slot_code TEXT,
+            area INTEGER,
+
             nome_festeggiato TEXT,
             eta_festeggiato INTEGER,
             data_compleanno TEXT,
-            data_evento TEXT,
 
             madre_nome_cognome TEXT,
             madre_telefono TEXT,
@@ -131,7 +143,7 @@ def init_db():
         """
     )
 
-    # colonne extra già tue
+    # Migrazioni software avanzato
     ensure_column(conn, "bookings", "acconto_eur", "TEXT")
     ensure_column(conn, "bookings", "pacchetto_personalizzato_dettagli", "TEXT")
 
@@ -145,21 +157,9 @@ def init_db():
     ensure_column(conn, "bookings", "dessert_adulti_choice", "TEXT")
 
     ensure_column(conn, "bookings", "extra_keys_csv", "TEXT")
+
     ensure_column(conn, "bookings", "totale_stimato_eur", "TEXT")
     ensure_column(conn, "bookings", "dettagli_contratto_text", "TEXT")
-
-    # ✅ colonne calendario (NUOVE)
-    ensure_column(conn, "bookings", "event_date", "TEXT")     # YYYY-MM-DD
-    ensure_column(conn, "bookings", "slot_code", "TEXT")      # MORNING/AFTERNOON
-    ensure_column(conn, "bookings", "start_time", "TEXT")     # 17:00
-    ensure_column(conn, "bookings", "end_time", "TEXT")       # 20:00
-    ensure_column(conn, "bookings", "area", "INTEGER")        # 1/2/3...
-
-    # indice utile
-    conn.execute("""
-      CREATE INDEX IF NOT EXISTS idx_bookings_calendar
-      ON bookings(event_date, slot_code)
-    """)
 
     conn.commit()
     conn.close()
@@ -188,212 +188,32 @@ def eur(d: Decimal) -> str:
     return s.replace(".", ",")
 
 
-def eur_to_cents(raw: str) -> int:
-    if raw is None:
-        return 0
-    s = raw.strip()
-    if not s:
-        return 0
-    # accetta "50,00" o "50.00"
-    s = s.replace(".", "").replace(",", ".")
-    try:
-        val = Decimal(s).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        return int(val * 100)
-    except Exception:
-        return 0
+def slot_label_from_code(code: str) -> str:
+    return "09:30–12:30" if code == "MORNING" else "17:00–20:00"
 
 
-def build_contract_text(payload: dict) -> str:
-    # ====== TUO TESTO (identico) ======
-    pacchetto = payload.get("pacchetto", "")
-    invitati_b = payload.get("invitati_bambini") or 0
-    invitati_a = payload.get("invitati_adulti") or 0
-    tot_persone = int(invitati_b) + int(invitati_a)
-
-    lines = []
-    if pacchetto in ("Fai da Te", "Lullyland Experience", "Lullyland all-inclusive"):
-        price = PACKAGE_PRICES_EUR.get(pacchetto, Decimal("0.00"))
-        lines.append(f"PACCHETTO: {pacchetto} - EUR {eur(price)} a persona")
-    else:
-        lines.append(f"PACCHETTO: {pacchetto}")
-
-    if pacchetto == "Fai da Te":
-        lines.append("")
-        lines.append("INCLUDE:")
-        lines.append("- Accesso al parco giochi di 350mq")
-        lines.append("- Pulizia e igienizzazione impeccabili prima e dopo la festa")
-        lines.append("- Area riservata con tavoli e sedie")
-        lines.append("- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema")
-        lines.append("")
-        lines.append("NON INCLUDE:")
-        lines.append("- Piatti, bicchieri, tovaglioli, tovaglie")
-        lines.append("- Servizio")
-        lines.append("- Sgombero tavoli")
-        lines.append("")
-        lines.append("NOTE IMPORTANTI (REGOLE):")
-        lines.append("- E' obbligatorio fornire certificazione alimentare sia per il buffet che per la torta (fornita dal fornitore da loro scelto)")
-        lines.append("- E' obbligatorio acquistare le bibite al nostro bar, non e' possibile introdurre bevande dall'esterno")
-        lines.append("- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
-        lines.append("- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata")
-        lines.append("- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)")
-        lines.append("- E' severamente vietato introdurre cibo e bevande all'interno del parco")
-
-    elif pacchetto == "Lullyland Experience":
-        catering_choice = payload.get("catering_baby_choice") or ""
-        torta_choice = payload.get("torta_choice") or ""
-        torta_interna_choice = payload.get("torta_interna_choice") or ""
-        torta_gusto_altro = payload.get("torta_gusto_altro") or ""
-
-        lines.append("")
-        lines.append("INCLUDE:")
-        lines.append("- Accesso al parco giochi di 350mq")
-        lines.append("- Pulizia e igienizzazione impeccabili prima e dopo la festa")
-        lines.append("- Area riservata con tavoli e sedie")
-        lines.append("- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema")
-        lines.append("- Piatti, bicchieri, tovaglioli")
-
-        if catering_choice == "menu_pizza":
-            lines.append("- Catering baby: Menu pizza: Pizza Baby, patatine, bottiglietta dell'acqua")
-        elif catering_choice == "box_merenda":
-            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico wurstel, mini pizzetta, panzerottino, patatine fritte, bottiglietta dell'acqua")
-        else:
-            lines.append("- Catering baby: (da definire)")
-
-        lines.append("- Catering adulti: fritti centrali (panzerottini, patatine, bandidos, crocchette), pizze centrali margherita e bibite centrali da 1,5lt (acqua, Coca-Cola, Fanta)")
-
-        lines.append("")
-        lines.append("NON INCLUDE:")
-        lines.append("- Torta di compleanno")
-
-        lines.append("")
-        if torta_choice == "esterna":
-            lines.append("TORTA (ESTERNA):")
-            lines.append(f"- Torta esterna: +EUR {eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} a persona (servizio torta)")
-        else:
-            lines.append(f"TORTA (SCELTA) (EUR {eur(TORTA_PRICE_EUR_PER_KG)} al chilo):")
-            if torta_choice == "interna":
-                if torta_interna_choice == "standard":
-                    lines.append(f"- Torta interna (da noi): {TORTA_INTERNA_FLAVORS['standard']}")
-                elif torta_interna_choice == "altro":
-                    lines.append(f"- Torta interna (da noi): Gusto concordato: {torta_gusto_altro or '(da compilare)'}")
-                else:
-                    lines.append("- Torta interna (da noi): (da definire)")
-            else:
-                lines.append("- (da definire)")
-
-        extra_keys = payload.get("extra_keys", [])
-        if extra_keys:
-            lines.append("")
-            lines.append("SERVIZI EXTRA (selezionati):")
-            tot_extra = Decimal("0.00")
-            for k in extra_keys:
-                if k in EXTRA_SERVIZI:
-                    name, price = EXTRA_SERVIZI[k]
-                    tot_extra += price
-                    lines.append(f"- {name} EUR {eur(price)}")
-            lines.append(f"Totale extra: EUR {eur(tot_extra)}")
-
-        lines.append("")
-        lines.append("NOTE IMPORTANTI (REGOLE):")
-        if torta_choice == "esterna":
-            lines.append("- (Torta esterna) E' obbligatorio fornire certificazione alimentare per la torta (fornita dal fornitore da loro scelto)")
-        lines.append("- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
-        lines.append("- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata")
-        lines.append("- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)")
-        lines.append("- E' severamente vietato introdurre cibo e bevande all'interno del parco")
-
-    elif pacchetto == "Lullyland all-inclusive":
-        catering_choice = payload.get("catering_baby_choice") or ""
-        dessert_bimbi = payload.get("dessert_bimbi_choice") or ""
-        dessert_adulti = payload.get("dessert_adulti_choice") or ""
-
-        torta_choice = payload.get("torta_choice") or ""
-        torta_interna_choice = payload.get("torta_interna_choice") or ""
-        torta_gusto_altro = payload.get("torta_gusto_altro") or ""
-
-        lines.append("")
-        lines.append("INCLUDE:")
-        lines.append("- Accesso al parco giochi di 350mq")
-        lines.append("- Pulizia e igienizzazione impeccabili prima e dopo la festa")
-        lines.append("- Area riservata con tavoli e sedie")
-        lines.append("- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema")
-        lines.append("- Piatti, bicchieri, tovaglioli")
-
-        if catering_choice == "menu_pizza":
-            lines.append("- Catering baby: Menu pizza: Pizza Baby, patatine, bottiglietta dell'acqua")
-        elif catering_choice == "box_merenda":
-            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico wurstel, mini pizzetta, panzerottino, patatine fritte e bottiglietta dell'acqua")
-        else:
-            lines.append("- Catering baby: (da definire)")
-
-        lines.append("- Catering adulti: tagliere selezione Perina (burratina, ricottina, salumi, ciliegine di mozzarella)")
-        lines.append("- Catering adulti: fritti centrali (panzerottini, patatine, bandidos, crocchette)")
-        lines.append("- Catering adulti: pizze in modalita giro pizza farcite (fino ad un massimo di una a testa)")
-        lines.append("- Bibita a testa tra birra, Coca-Cola, Fanta")
-
-        if dessert_bimbi == "muffin_nutella":
-            lines.append("- Dessert per bambini: Muffin alla Nutella")
-        elif dessert_bimbi == "torta_compleanno":
-            lines.append("- Dessert per bambini: Torta di compleanno (vedi scelta torta sotto)")
-        else:
-            lines.append("- Dessert per bambini: (da definire)")
-
-        if dessert_adulti == "muffin_nutella":
-            lines.append("- Dessert per adulti: Muffin alla Nutella")
-        elif dessert_adulti == "torta_compleanno":
-            lines.append("- Dessert per adulti: Torta di compleanno (vedi scelta torta sotto)")
-        else:
-            lines.append("- Dessert per adulti: (da definire)")
-
-        need_torta = (dessert_bimbi == "torta_compleanno") or (dessert_adulti == "torta_compleanno")
-        if need_torta:
-            lines.append("")
-            lines.append("TORTA (SCELTA) (inclusa nel pacchetto):")
-            if torta_choice == "esterna":
-                lines.append("- Torta esterna (con certificazione alimentare del fornitore scelto)")
-            elif torta_choice == "interna":
-                if torta_interna_choice == "standard":
-                    lines.append(f"- Torta interna (da noi): {TORTA_INTERNA_FLAVORS['standard']}")
-                elif torta_interna_choice == "altro":
-                    lines.append(f"- Torta interna (da noi): Gusto concordato: {torta_gusto_altro or '(da compilare)'}")
-                else:
-                    lines.append("- Torta interna (da noi): (da definire)")
-            else:
-                lines.append("- (da definire)")
-
-        lines.append("- Carretto zucchero filato illimitati")
-        lines.append("- Carretto pop corn illimitati")
-        lines.append("- Intrattenitore (salvo disponibilita)")
-        lines.append("- Torta scenografica (noleggio)")
-
-        extra_keys = payload.get("extra_keys", [])
-        if extra_keys:
-            lines.append("")
-            lines.append("SERVIZI EXTRA (selezionati):")
-            tot_extra = Decimal("0.00")
-            for k in extra_keys:
-                if k in EXTRA_SERVIZI_ALL_INCLUSIVE:
-                    name, price = EXTRA_SERVIZI_ALL_INCLUSIVE[k]
-                    tot_extra += price
-                    lines.append(f"- {name} EUR {eur(price)}")
-            lines.append(f"Totale extra: EUR {eur(tot_extra)}")
-
-        lines.append("")
-        lines.append("NOTE IMPORTANTI (REGOLE):")
-        lines.append("- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
-        lines.append("- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata")
-        lines.append("- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)")
-        lines.append("- E' severamente vietato introdurre cibo e bevande all'interno del parco")
-
-    elif pacchetto == "Personalizzato":
-        det = (payload.get("pacchetto_personalizzato_dettagli") or "").strip()
-        lines.append("")
-        lines.append("DETTAGLI PERSONALIZZAZIONE:")
-        lines.append(det if det else "(da compilare)")
-
-    return "\n".join(lines)
+def slots_for_date(d: date):
+    # Lun→Dom: 17:00–20:00. Solo Sab+Dom: anche 09:30–12:30.
+    slots = [("AFTERNOON", "17:00–20:00")]
+    if d.weekday() in (5, 6):  # sab, dom
+        slots.insert(0, ("MORNING", "09:30–12:30"))
+    return slots
 
 
+def slot_count(conn, event_date: str, slot_code: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM bookings WHERE event_date=? AND slot_code=?",
+        (event_date, slot_code),
+    ).fetchone()
+    return int(row["c"] or 0)
+
+
+def next_area_for_slot(count: int) -> int:
+    # 0 -> Area1, 1 -> Area2, 2 -> Area3
+    return 1 if count == 0 else (2 if count == 1 else 3)
+    # -------------------------
+# Contratto + calcoli
+# -------------------------
 def compute_totals(payload: dict) -> dict:
     pacchetto = payload.get("pacchetto", "")
     invitati_b = int(payload.get("invitati_bambini") or 0)
@@ -411,11 +231,14 @@ def compute_totals(payload: dict) -> dict:
         if torta_choice == "esterna":
             totale_torta = TORTA_ESTERNASVC_EUR_PER_PERSON * Decimal(tot_persone)
         elif torta_choice == "interna":
-            torta_kg = (Decimal(tot_persone) * KG_PER_PERSON).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            torta_kg = (Decimal(tot_persone) * KG_PER_PERSON).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             totale_torta = TORTA_PRICE_EUR_PER_KG * torta_kg
 
     extra_keys = payload.get("extra_keys", [])
     totale_extra = Decimal("0.00")
+
     if pacchetto == "Lullyland all-inclusive":
         for k in extra_keys:
             if k in EXTRA_SERVIZI_ALL_INCLUSIVE:
@@ -425,7 +248,9 @@ def compute_totals(payload: dict) -> dict:
             if k in EXTRA_SERVIZI:
                 totale_extra += EXTRA_SERVIZI[k][1]
 
-    totale = (totale_pacchetto + totale_torta + totale_extra).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    totale = (totale_pacchetto + totale_torta + totale_extra).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
 
     return {
         "tot_persone": tot_persone,
@@ -437,54 +262,314 @@ def compute_totals(payload: dict) -> dict:
     }
 
 
+def build_contract_text(payload: dict) -> str:
+    pacchetto = payload.get("pacchetto", "")
+    invitati_b = payload.get("invitati_bambini") or 0
+    invitati_a = payload.get("invitati_adulti") or 0
+    tot_persone = int(invitati_b) + int(invitati_a)
+
+    lines = []
+    lines.append(
+        f"DATA EVENTO: {payload.get('event_date') or '-'}  |  "
+        f"SLOT: {slot_label_from_code(payload.get('slot_code') or '')}  |  "
+        f"AREA: {payload.get('area') or '-'}"
+    )
+    lines.append("")
+
+    if pacchetto in ("Fai da Te", "Lullyland Experience", "Lullyland all-inclusive"):
+        price = PACKAGE_PRICES_EUR.get(pacchetto, Decimal("0.00"))
+        lines.append(f"PACCHETTO: {pacchetto} - EUR {eur(price)} a persona")
+    else:
+        lines.append(f"PACCHETTO: {pacchetto}")
+
+    if pacchetto == "Fai da Te":
+        lines += [
+            "",
+            "INCLUDE:",
+            "- Accesso al parco giochi di 350mq",
+            "- Pulizia e igienizzazione impeccabili prima e dopo la festa",
+            "- Area riservata con tavoli e sedie",
+            "- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema",
+            "",
+            "NON INCLUDE:",
+            "- Piatti, bicchieri, tovaglioli, tovaglie",
+            "- Servizio",
+            "- Sgombero tavoli",
+            "",
+            "NOTE IMPORTANTI (REGOLE):",
+            "- E' obbligatorio fornire certificazione alimentare sia per il buffet che per la torta (fornita dal fornitore da loro scelto)",
+            "- E' obbligatorio acquistare le bibite al nostro bar, non e' possibile introdurre bevande dall'esterno",
+            "- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco",
+            "- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata",
+            "- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)",
+            "- E' severamente vietato introdurre cibo e bevande all'interno del parco",
+        ]
+
+    elif pacchetto == "Lullyland Experience":
+        catering_choice = payload.get("catering_baby_choice") or ""
+        torta_choice = payload.get("torta_choice") or ""
+        torta_interna_choice = payload.get("torta_interna_choice") or ""
+        torta_gusto_altro = payload.get("torta_gusto_altro") or ""
+
+        lines += [
+            "",
+            "INCLUDE:",
+            "- Accesso al parco giochi di 350mq",
+            "- Pulizia e igienizzazione impeccabili prima e dopo la festa",
+            "- Area riservata con tavoli e sedie",
+            "- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema",
+            "- Piatti, bicchieri, tovaglioli",
+        ]
+
+        if catering_choice == "menu_pizza":
+            lines.append("- Catering baby: Menu pizza: Pizza Baby, patatine, bottiglietta dell'acqua")
+        elif catering_choice == "box_merenda":
+            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico wurstel, mini pizzetta, panzerottino, patatine fritte, bottiglietta dell'acqua")
+        else:
+            lines.append("- Catering baby: (da definire)")
+
+        lines.append("- Catering adulti: fritti centrali (panzerottini, patatine, bandidos, crocchette), pizze centrali margherita e bibite centrali da 1,5lt (acqua, Coca-Cola, Fanta)")
+
+        lines += ["", "NON INCLUDE:", "- Torta di compleanno", ""]
+
+        if torta_choice == "esterna":
+            lines += [
+                "TORTA (ESTERNA):",
+                f"- Torta esterna: +EUR {eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} a persona (servizio torta)",
+            ]
+        else:
+            lines.append(f"TORTA (SCELTA) (EUR {eur(TORTA_PRICE_EUR_PER_KG)} al chilo):")
+            if torta_choice == "interna":
+                if torta_interna_choice == "standard":
+                    lines.append(f"- Torta interna (da noi): {TORTA_INTERNA_FLAVORS['standard']}")
+                elif torta_interna_choice == "altro":
+                    lines.append(f"- Torta interna (da noi): Gusto concordato: {torta_gusto_altro or '(da compilare)'}")
+                else:
+                    lines.append("- Torta interna (da noi): (da definire)")
+            else:
+                lines.append("- (da definire)")
+
+        extra_keys = payload.get("extra_keys", [])
+        if extra_keys:
+            lines += ["", "SERVIZI EXTRA (selezionati):"]
+            tot_extra = Decimal("0.00")
+            for k in extra_keys:
+                if k in EXTRA_SERVIZI:
+                    name, price = EXTRA_SERVIZI[k]
+                    tot_extra += price
+                    lines.append(f"- {name} EUR {eur(price)}")
+            lines.append(f"Totale extra: EUR {eur(tot_extra)}")
+
+        lines += ["", "NOTE IMPORTANTI (REGOLE):"]
+        if torta_choice == "esterna":
+            lines.append("- (Torta esterna) E' obbligatorio fornire certificazione alimentare per la torta (fornita dal fornitore da loro scelto)")
+        lines += [
+            "- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco",
+            "- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata",
+            "- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)",
+            "- E' severamente vietato introdurre cibo e bevande all'interno del parco",
+        ]
+
+    elif pacchetto == "Lullyland all-inclusive":
+        catering_choice = payload.get("catering_baby_choice") or ""
+        dessert_bimbi = payload.get("dessert_bimbi_choice") or ""
+        dessert_adulti = payload.get("dessert_adulti_choice") or ""
+
+        torta_choice = payload.get("torta_choice") or ""
+        torta_interna_choice = payload.get("torta_interna_choice") or ""
+        torta_gusto_altro = payload.get("torta_gusto_altro") or ""
+
+        lines += [
+            "",
+            "INCLUDE:",
+            "- Accesso al parco giochi di 350mq",
+            "- Pulizia e igienizzazione impeccabili prima e dopo la festa",
+            "- Area riservata con tavoli e sedie",
+            "- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema",
+            "- Piatti, bicchieri, tovaglioli",
+        ]
+
+        if catering_choice == "menu_pizza":
+            lines.append("- Catering baby: Menu pizza: Pizza Baby, patatine, bottiglietta dell'acqua")
+        elif catering_choice == "box_merenda":
+            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico wurstel, mini pizzetta, panzerottino, patatine fritte e bottiglietta dell'acqua")
+        else:
+            lines.append("- Catering baby: (da definire)")
+
+        lines += [
+            "- Catering adulti: tagliere selezione Perina (burratina, ricottina, salumi, ciliegine di mozzarella)",
+            "- Catering adulti: fritti centrali (panzerottini, patatine, bandidos, crocchette)",
+            "- Catering adulti: pizze in modalita giro pizza farcite (fino ad un massimo di una a testa)",
+            "- Bibita a testa tra birra, Coca-Cola, Fanta",
+        ]
+
+        if dessert_bimbi == "muffin_nutella":
+            lines.append("- Dessert per bambini: Muffin alla Nutella")
+        elif dessert_bimbi == "torta_compleanno":
+            lines.append("- Dessert per bambini: Torta di compleanno (vedi scelta torta sotto)")
+        else:
+            lines.append("- Dessert per bambini: (da definire)")
+
+        if dessert_adulti == "muffin_nutella":
+            lines.append("- Dessert per adulti: Muffin alla Nutella")
+        elif dessert_adulti == "torta_compleanno":
+            lines.append("- Dessert per adulti: Torta di compleanno (vedi scelta torta sotto)")
+        else:
+            lines.append("- Dessert per adulti: (da definire)")
+
+        need_torta = (dessert_bimbi == "torta_compleanno") or (dessert_adulti == "torta_compleanno")
+        if need_torta:
+            lines += ["", "TORTA (SCELTA) (inclusa nel pacchetto):"]
+            if torta_choice == "esterna":
+                lines.append("- Torta esterna (con certificazione alimentare del fornitore scelto)")
+            elif torta_choice == "interna":
+                if torta_interna_choice == "standard":
+                    lines.append(f"- Torta interna (da noi): {TORTA_INTERNA_FLAVORS['standard']}")
+                elif torta_interna_choice == "altro":
+                    lines.append(f"- Torta interna (da noi): Gusto concordato: {torta_gusto_altro or '(da compilare)'}")
+                else:
+                    lines.append("- Torta interna (da noi): (da definire)")
+            else:
+                lines.append("- (da definire)")
+
+        lines += [
+            "- Carretto zucchero filato illimitati",
+            "- Carretto pop corn illimitati",
+            "- Intrattenitore (salvo disponibilita)",
+            "- Torta scenografica (noleggio)",
+        ]
+
+        extra_keys = payload.get("extra_keys", [])
+        if extra_keys:
+            lines += ["", "SERVIZI EXTRA (selezionati):"]
+            tot_extra = Decimal("0.00")
+            for k in extra_keys:
+                if k in EXTRA_SERVIZI_ALL_INCLUSIVE:
+                    name, price = EXTRA_SERVIZI_ALL_INCLUSIVE[k]
+                    tot_extra += price
+                    lines.append(f"- {name} EUR {eur(price)}")
+            lines.append(f"Totale extra: EUR {eur(tot_extra)}")
+
+        lines += [
+            "",
+            "NOTE IMPORTANTI (REGOLE):",
+            "- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco",
+            "- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata",
+            "- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)",
+            "- E' severamente vietato introdurre cibo e bevande all'interno del parco",
+        ]
+
+    elif pacchetto == "Personalizzato":
+        det = (payload.get("pacchetto_personalizzato_dettagli") or "").strip()
+        lines += ["", "DETTAGLI PERSONALIZZAZIONE:"]
+        lines.append(det if det else "(da compilare)")
+
+    return "\n".join(lines)
+
+
 # -------------------------
-# Calendario: slot rules
+# PDF: genera contratto
 # -------------------------
-def slots_for_date(d: date):
-    slots = [{
-        "code": "AFTERNOON",
-        "label": "POMERIDIANO/SERALE",
-        "start": "17:00",
-        "end": "20:00",
-    }]
-    if d.weekday() in (5, 6):  # Sat/Sun
-        slots.insert(0, {
-            "code": "MORNING",
-            "label": "MATTINA",
-            "start": "09:30",
-            "end": "12:30",
-        })
-    return slots
+def contract_pdf_bytes(booking_row: sqlite3.Row) -> bytes:
+    buf = io.BytesIO()
+    c = pdfcanvas.Canvas(buf, pagesize=A4)
+    w, h = A4
 
+    c.setTitle(f"Contratto Lullyland - Prenotazione #{booking_row['id']}")
 
-def slot_count(conn, event_date: str, slot_code: str) -> int:
-    r = conn.execute(
-        "SELECT COUNT(*) AS c FROM bookings WHERE event_date=? AND slot_code=?",
-        (event_date, slot_code)
-    ).fetchone()
-    return int(r["c"])
+    y = h - 2 * cm
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(2 * cm, y, f"Contratto - {APP_NAME}")
+    y -= 0.8 * cm
 
+    c.setFont("Helvetica", 10)
+    c.drawString(2 * cm, y, f"Prenotazione #{booking_row['id']}  |  Creato: {booking_row['created_at']}")
+    y -= 0.6 * cm
 
-def next_area(conn, event_date: str, slot_code: str) -> int:
-    n = slot_count(conn, event_date, slot_code)
-    if n == 0:
-        return 1
-    if n == 1:
-        return 2
-    return 3
+    # Info rapide
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(2 * cm, y, "Dati evento")
+    y -= 0.5 * cm
+    c.setFont("Helvetica", 10)
+    c.drawString(2 * cm, y, f"Data: {booking_row['event_date'] or '-'}   Slot: {slot_label_from_code(booking_row['slot_code'] or '')}   Area: {booking_row['area'] or '-'}")
+    y -= 0.6 * cm
 
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(2 * cm, y, "Festeggiato")
+    y -= 0.5 * cm
+    c.setFont("Helvetica", 10)
+    c.drawString(2 * cm, y, f"{booking_row['nome_festeggiato'] or '-'}  -  Età: {booking_row['eta_festeggiato'] or '-'}")
+    y -= 0.7 * cm
 
+    # Contratto testuale
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(2 * cm, y, "Dettagli (contratto)")
+    y -= 0.5 * cm
+
+    c.setFont("Helvetica", 9)
+    text = (booking_row["dettagli_contratto_text"] or "").strip()
+    if not text:
+        text = "(Nessun dettaglio contratto disponibile.)"
+
+    # wrapping
+    max_chars = 105
+    lines = []
+    for raw in text.split("\n"):
+        raw = raw.rstrip()
+        if not raw:
+            lines.append("")
+            continue
+        while len(raw) > max_chars:
+            lines.append(raw[:max_chars])
+            raw = raw[max_chars:]
+        lines.append(raw)
+
+    for ln in lines:
+        if y < 3 * cm:
+            c.showPage()
+            y = h - 2 * cm
+            c.setFont("Helvetica", 9)
+        c.drawString(2 * cm, y, ln)
+        y -= 0.35 * cm
+
+    # Firma (se c'è)
+    sig = booking_row["firma_png_base64"] or ""
+    if sig.startswith("data:image/png;base64,"):
+        try:
+            b64 = sig.split(",", 1)[1]
+            img_bytes = base64.b64decode(b64)
+            img = ImageReader(io.BytesIO(img_bytes))
+
+            if y < 7 * cm:
+                c.showPage()
+                y = h - 2 * cm
+
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(2 * cm, y, "Firma genitore")
+            y -= 0.5 * cm
+
+            c.drawImage(img, 2 * cm, y - 5 * cm, width=10 * cm, height=4 * cm, preserveAspectRatio=True, mask='auto')
+            y -= 5.5 * cm
+        except Exception:
+            pass
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+    # -------------------------
+# AUTH
 # -------------------------
-# Auth
-# -------------------------
+def is_logged_in():
+    return session.get("ok") is True
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        pin = request.form.get("pin", "")
-        if pin == APP_PIN:
+        if request.form.get("pin") == APP_PIN:
             session["ok"] = True
             return redirect(url_for("calendar_month"))
-        return render_template_string(LOGIN_HTML, error="PIN errato.", app_name=APP_NAME)
+        return render_template_string(LOGIN_HTML, error="PIN errato", app_name=APP_NAME)
     return render_template_string(LOGIN_HTML, error=None, app_name=APP_NAME)
 
 
@@ -495,261 +580,192 @@ def logout():
 
 
 # -------------------------
-# Calendario: mese / anno / giorno
+# HOME → redirect calendario
 # -------------------------
-BASE_CSS = """
-<style>
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto;margin:16px;background:#f6f7fb;}
-  a{color:inherit}
-  .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
-  .btn{display:inline-block;padding:10px 12px;border:1px solid #ddd;background:#fff;border-radius:12px;text-decoration:none;font-weight:800;}
-  .btn.primary{background:#111;color:#fff;border-color:#111;}
-  .card{background:#fff;border:1px solid #e5e5e5;border-radius:14px;padding:12px;}
-  .muted{opacity:.7}
-  .head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}
-  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
-  .grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-top:10px;}
-  .cell{background:#fff;border:1px solid #e5e5e5;border-radius:12px;padding:10px;min-height:86px;}
-  .cell.empty{background:transparent;border:0;}
-  .daynum{font-weight:900;}
-  .bar{margin-top:8px;padding:6px;border-radius:10px;font-size:12px;font-weight:900;border:1px solid #eee;}
-  .bar.green{background:#eaffea;border-color:#b7e6b7;}
-  .bar.yellow{background:#fff8d8;border-color:#f1df86;}
-  .bar.red{background:#ffe1e1;border-color:#f2a0a0;}
-  .open{display:inline-block;margin-top:8px;font-weight:900;text-decoration:none;}
-  .slot{border:1px solid #ddd;border-radius:14px;background:#fff;padding:12px;margin-top:10px;}
-  .slothead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;}
-  .eventline{padding:10px;border-radius:12px;border:1px solid #eee;background:#fcfcfc;margin-top:8px;}
-</style>
-"""
-
-def topbar(active="month"):
-    return f"""
-    <div class="topbar">
-      <div class="row">
-        <a class="btn {'primary' if active=='month' else ''}" href="{url_for('calendar_month')}">📆 Calendario</a>
-        <a class="btn {'primary' if active=='year' else ''}" href="{url_for('calendar_year')}">🗓️ Anno</a>
-        <a class="btn" href="{url_for('prenotazioni')}">📋 Prenotazioni</a>
-      </div>
-      <div class="row">
-        <a class="btn" href="{url_for('logout')}">Esci</a>
-      </div>
-    </div>
-    """
-
 @app.route("/")
+def home():
+    if not is_logged_in():
+        return redirect(url_for("login"))
+    return redirect(url_for("calendar_month"))
+
+
+# -------------------------
+# CALENDARIO MESE
+# -------------------------
+@app.route("/calendar")
 def calendar_month():
     if not is_logged_in():
         return redirect(url_for("login"))
 
     today = date.today()
-    y = int(request.args.get("y", today.year))
-    m = int(request.args.get("m", today.month))
+    year = int(request.args.get("year", today.year))
+    month = int(request.args.get("month", today.month))
 
-    prev_y, prev_m = (y - 1, 12) if m == 1 else (y, m - 1)
-    next_y, next_m = (y + 1, 1) if m == 12 else (y, m + 1)
-
-    weeks = monthcalendar(y, m)
+    first_day = date(year, month, 1)
+    _, days_in_month = calendar.monthrange(year, month)
 
     conn = get_db()
-    cells_html = ""
-    for w in weeks:
-        for dnum in w:
-            if dnum == 0:
-                cells_html += "<div class='cell empty'></div>"
-                continue
-            d_iso = date(y, m, dnum).isoformat()
-            c = conn.execute("SELECT COUNT(*) AS c FROM bookings WHERE event_date=?", (d_iso,)).fetchone()["c"]
-            c = int(c)
-            col = "green" if c == 0 else "yellow" if c == 1 else "red"
-            cells_html += f"""
-              <div class="cell">
-                <div class="daynum">{dnum}</div>
-                <div class="bar {col}">{c} eventi</div>
-                <a class="open" href="{url_for('day_view', date_iso=d_iso)}">Apri</a>
-              </div>
-            """
+    rows = conn.execute("""
+        SELECT event_date, COUNT(*) as cnt
+        FROM bookings
+        GROUP BY event_date
+    """).fetchall()
     conn.close()
 
-    return f"""<!doctype html><html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{APP_NAME} – Calendario</title>
-{BASE_CSS}
-</head><body>
-{topbar('month')}
-<div class="card">
-  <div class="head">
-    <div>
-      <h2 style="margin:0;">{month_name[m]} {y}</h2>
-      <div class="muted">Scorri mesi come su iPhone</div>
-    </div>
-    <div class="row">
-      <a class="btn" href="{url_for('calendar_month', y=prev_y, m=prev_m)}">←</a>
-      <a class="btn" href="{url_for('calendar_month', y=next_y, m=next_m)}">→</a>
-      <a class="btn" href="{url_for('calendar_month', y=today.year, m=today.month)}">Oggi</a>
-    </div>
-  </div>
-  <div class="grid">{cells_html}</div>
-</div>
-</body></html>
-"""
+    events_by_day = {r["event_date"]: r["cnt"] for r in rows}
 
-
-@app.route("/year")
-def calendar_year():
-    if not is_logged_in():
-        return redirect(url_for("login"))
-
-    today = date.today()
-    y = int(request.args.get("y", today.year))
-
-    conn = get_db()
-    cards = ""
-    for mm in range(1, 13):
-        start = date(y, mm, 1).isoformat()
-        end = (date(y + 1, 1, 1) if mm == 12 else date(y, mm + 1, 1)).isoformat()
-        c = conn.execute("""
-          SELECT COUNT(*) AS c FROM bookings
-          WHERE event_date >= ? AND event_date < ?
-        """, (start, end)).fetchone()["c"]
-        c = int(c)
-        col = "green" if c == 0 else "yellow" if c < 3 else "red"
-        cards += f"""
-          <div class="cell" style="min-height:auto;">
-            <div style="font-weight:900;">{month_name[mm]}</div>
-            <div class="bar {col}">{c} eventi</div>
-            <a class="open" href="{url_for('calendar_month', y=y, m=mm)}">Apri</a>
-          </div>
-        """
-    conn.close()
-
-    return f"""<!doctype html><html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{APP_NAME} – Anno</title>
-{BASE_CSS}
-</head><body>
-{topbar('year')}
-<div class="card">
-  <div class="head">
-    <h2 style="margin:0;">Anno {y}</h2>
-    <div class="row">
-      <a class="btn" href="{url_for('calendar_year', y=y-1)}">← {y-1}</a>
-      <a class="btn" href="{url_for('calendar_year', y=y+1)}">{y+1} →</a>
-    </div>
-  </div>
-  <div class="grid" style="grid-template-columns:repeat(3,1fr);">{cards}</div>
-</div>
-</body></html>
-"""
-
-
-@app.route("/day/<date_iso>")
-def day_view(date_iso):
-    if not is_logged_in():
-        return redirect(url_for("login"))
-
-    try:
-        d = datetime.strptime(date_iso, "%Y-%m-%d").date()
-    except ValueError:
-        abort(404)
-
-    conn = get_db()
-    blocks = ""
-    for s in slots_for_date(d):
-        c = slot_count(conn, date_iso, s["code"])
-        rows = conn.execute("""
-          SELECT id, area, nome_festeggiato, eta_festeggiato, invitati_bambini, invitati_adulti,
-                 tema_evento, pacchetto
-          FROM bookings
-          WHERE event_date=? AND slot_code=?
-          ORDER BY area ASC, id ASC
-        """, (date_iso, s["code"])).fetchall()
-
-        ev_html = ""
-        for r in rows:
-            ev_html += f"""
-              <div class="eventline">
-                <b>Area {r['area'] or '-'}: {r['nome_festeggiato'] or '-'}</b>
-                <div class="muted">{(r['eta_festeggiato'] or '-')} anni · {(r['invitati_bambini'] or 0)} bimbi / {(r['invitati_adulti'] or 0)} adulti</div>
-                <div class="muted">Tema: {(r['tema_evento'] or '-')} · Pacchetto: {(r['pacchetto'] or '-')}</div>
-                <div class="row" style="margin-top:8px;">
-                  <a class="btn" href="{url_for('prenotazione_dettaglio', booking_id=r['id'])}">Apri</a>
-                </div>
-              </div>
-            """
-
-        blocks += f"""
-          <div class="slot">
-            <div class="slothead">
-              <div>
-                <div style="font-weight:900;">{s['start']}–{s['end']} <span class="muted">({s['label']})</span></div>
-                <div class="muted">Prenotazioni nello slot: <b>{c}/2</b></div>
-                {ev_html}
-              </div>
-              <a class="btn primary" href="{url_for('booking_new')}?date={date_iso}&slot={s['code']}">➕ Aggiungi evento</a>
-            </div>
-          </div>
-        """
-
-    conn.close()
-
-    return f"""<!doctype html><html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{APP_NAME} – Giorno</title>
-{BASE_CSS}
-</head><body>
-{topbar('month')}
-<div class="card">
-  <div class="head">
-    <div>
-      <h2 style="margin:0;">{d.strftime('%A %d %B %Y')}</h2>
-      <div class="muted">Seleziona lo slot e aggiungi evento</div>
-    </div>
-    <a class="btn" href="{url_for('calendar_month', y=d.year, m=d.month)}">← Torna al mese</a>
-  </div>
-  {blocks}
-</div>
-</body></html>
-"""
+    return render_template_string(
+        CALENDAR_MONTH_HTML,
+        app_name=APP_NAME,
+        year=year,
+        month=month,
+        days=range(1, days_in_month + 1),
+        first_weekday=first_day.weekday(),
+        events_by_day=events_by_day,
+    )
 
 
 # -------------------------
-# SOFTWARE EVENTO (TUO) collegato al calendario
+# GIORNO → SLOT
+# -------------------------
+@app.route("/calendar/<event_date>")
+def calendar_day(event_date):
+    if not is_logged_in():
+        return redirect(url_for("login"))
+
+    slots = get_slots_for_date(event_date)
+
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT id, slot_code, area, nome_festeggiato, eta_festeggiato,
+               invitati_bambini, invitati_adulti, tema_evento, pacchetto
+        FROM bookings
+        WHERE event_date = ?
+        ORDER BY slot_code, area
+    """, (event_date,)).fetchall()
+    conn.close()
+
+    by_slot = {}
+    for r in rows:
+        by_slot.setdefault(r["slot_code"], []).append(r)
+
+    return render_template_string(
+        CALENDAR_DAY_HTML,
+        app_name=APP_NAME,
+        event_date=event_date,
+        slots=slots,
+        by_slot=by_slot,
+    )
+
+
+# -------------------------
+# ELIMINA EVENTO
+# -------------------------
+@app.route("/event/<int:booking_id>/delete", methods=["POST"])
+def delete_event(booking_id):
+    if not is_logged_in():
+        return redirect(url_for("login"))
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT event_date FROM bookings WHERE id = ?",
+        (booking_id,)
+    ).fetchone()
+
+    if row:
+        event_date = row["event_date"]
+        conn.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+        conn.commit()
+        conn.close()
+        return redirect(url_for("calendar_day", event_date=event_date))
+
+    conn.close()
+    return redirect(url_for("calendar_month"))
+    
+    # -------------------------
+# Helpers calendario
+# -------------------------
+def parse_event_date(s: str) -> date:
+    # formato atteso: YYYY-MM-DD
+    return datetime.strptime(s, "%Y-%m-%d").date()
+
+
+def get_slots_for_date(event_date: str):
+    d = parse_event_date(event_date)
+    return slots_for_date(d)
+
+
+# -------------------------
+# BOOKING: nuova prenotazione da calendario
+# URL: /booking/new?event_date=YYYY-MM-DD&slot_code=AFTERNOON|MORNING
 # -------------------------
 @app.route("/booking/new", methods=["GET", "POST"])
 def booking_new():
-    """
-    Questo è il tuo /prenota, ma:
-    - data_evento NON si inserisce più
-    - arriva da ?date=YYYY-MM-DD&slot=MORNING/AFTERNOON
-    - assegna area 1/2/3 (area3 con conferma)
-    """
     if not is_logged_in():
         return redirect(url_for("login"))
 
-    event_date = (request.args.get("date") or "").strip()
-    slot_code = (request.args.get("slot") or "").strip().upper()
+    event_date = (request.args.get("event_date") or "").strip()
+    slot_code = (request.args.get("slot_code") or "").strip()
 
-    # validate date
-    try:
-        d = datetime.strptime(event_date, "%Y-%m-%d").date()
-    except Exception:
-        abort(400, "Data non valida.")
+    if not event_date or not slot_code:
+        return redirect(url_for("calendar_month"))
 
-    allowed = {s["code"] for s in slots_for_date(d)}
-    if slot_code not in allowed:
-        abort(400, "Slot non valido per questa data.")
-
-    slot = next(s for s in slots_for_date(d) if s["code"] == slot_code)
+    slot_label = slot_label_from_code(slot_code)
 
     conn = get_db()
-    current = slot_count(conn, event_date, slot_code)
-    is_full = current >= 2
+    count = slot_count(conn, event_date, slot_code)
+    area = next_area_for_slot(count)
+    is_full = (count >= 2)  # area1+area2 già occupate
+    is_hard_full = (count >= 3)  # già 3 eventi nello stesso slot
 
     if request.method == "POST":
+        # Se già 3 presenti, blocco definitivo
+        if is_hard_full:
+            conn.close()
+            return render_template_string(
+                BOOKING_HTML,
+                app_name=APP_NAME,
+                error="Giorno/slot già pieno (Area 1, 2 e 3 occupate).",
+                today=datetime.now().strftime("%Y-%m-%d"),
+                form=request.form,
+                package_labels=PACKAGE_LABELS,
+                catering_baby_options=CATERING_BABY_OPTIONS,
+                dessert_options=DESSERT_OPTIONS,
+                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                extra_servizi=EXTRA_SERVIZI,
+                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                event_date=event_date,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=area,
+                is_full=is_full,
+            )
+
+        # Se 2 già presenti, serve conferma Area 3
+        confirm_area3 = 1 if request.form.get("confirm_area3") else 0
+        if is_full and confirm_area3 != 1:
+            conn.close()
+            return render_template_string(
+                BOOKING_HTML,
+                app_name=APP_NAME,
+                error="Slot già pieno (Area 1 e 2). Spunta la conferma per inserire in Area 3.",
+                today=datetime.now().strftime("%Y-%m-%d"),
+                form=request.form,
+                package_labels=PACKAGE_LABELS,
+                catering_baby_options=CATERING_BABY_OPTIONS,
+                dessert_options=DESSERT_OPTIONS,
+                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                extra_servizi=EXTRA_SERVIZI,
+                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                event_date=event_date,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=3,
+                is_full=is_full,
+            )
+
         consenso_privacy = 1 if request.form.get("consenso_privacy") else 0
         consenso_foto = 1 if request.form.get("consenso_foto") else 0
-
         if consenso_privacy != 1:
             conn.close()
             return render_template_string(
@@ -765,7 +781,9 @@ def booking_new():
                 extra_servizi=EXTRA_SERVIZI,
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
                 event_date=event_date,
-                slot=slot,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=(3 if is_full else area),
                 is_full=is_full,
             )
 
@@ -787,7 +805,9 @@ def booking_new():
                 extra_servizi=EXTRA_SERVIZI,
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
                 event_date=event_date,
-                slot=slot,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=(3 if is_full else area),
                 is_full=is_full,
             )
 
@@ -806,34 +826,15 @@ def booking_new():
                 extra_servizi=EXTRA_SERVIZI,
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
                 event_date=event_date,
-                slot=slot,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=(3 if is_full else area),
                 is_full=is_full,
             )
 
         pacchetto = (request.form.get("pacchetto") or "").strip()
 
-        # regola 3a festa: conferma area3 se già pieno
-        confirm_area3 = (request.form.get("confirm_area3") == "on")
-        now_count = slot_count(conn, event_date, slot_code)
-        if now_count >= 2 and not confirm_area3:
-            conn.close()
-            return render_template_string(
-                BOOKING_HTML,
-                app_name=APP_NAME,
-                error="Area 1 e 2 sono già impegnate. Se vuoi inserire comunque, conferma Area 3.",
-                today=datetime.now().strftime("%Y-%m-%d"),
-                form=request.form,
-                package_labels=PACKAGE_LABELS,
-                catering_baby_options=CATERING_BABY_OPTIONS,
-                dessert_options=DESSERT_OPTIONS,
-                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
-                extra_servizi=EXTRA_SERVIZI,
-                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
-                event_date=event_date,
-                slot=slot,
-                is_full=True,
-            )
-
+        # extra selezionati
         extra_keys = []
         if pacchetto == "Lullyland all-inclusive":
             for k in EXTRA_SERVIZI_ALL_INCLUSIVE.keys():
@@ -846,13 +847,13 @@ def booking_new():
 
         payload = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "event_date": event_date,
+            "slot_code": slot_code,
+            "area": (3 if is_full else area),
 
             "nome_festeggiato": (request.form.get("nome_festeggiato") or "").strip(),
             "eta_festeggiato": to_int(request.form.get("eta_festeggiato")),
             "data_compleanno": (request.form.get("data_compleanno") or "").strip(),
-
-            # ✅ NON SI COMPILA: viene dal calendario
-            "data_evento": event_date,  # compatibilità vecchia lista/dettaglio
 
             "madre_nome_cognome": (request.form.get("madre_nome_cognome") or "").strip(),
             "madre_telefono": (request.form.get("madre_telefono") or "").strip(),
@@ -891,7 +892,7 @@ def booking_new():
             "extra_keys": extra_keys,
         }
 
-        # validazioni base (tue)
+        # Validazioni minime
         if not payload["nome_festeggiato"]:
             conn.close()
             return render_template_string(
@@ -907,7 +908,9 @@ def booking_new():
                 extra_servizi=EXTRA_SERVIZI,
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
                 event_date=event_date,
-                slot=slot,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=(3 if is_full else area),
                 is_full=is_full,
             )
 
@@ -926,24 +929,195 @@ def booking_new():
                 extra_servizi=EXTRA_SERVIZI,
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
                 event_date=event_date,
-                slot=slot,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=(3 if is_full else area),
                 is_full=is_full,
             )
 
-        # (qui mantieni tutte le tue validazioni specifiche: Experience/All-inclusive)
-        # Ho lasciato il tuo flusso invariato nel form, quindi i campi funzionano.
+        if payload["pacchetto"] == "Personalizzato" and not payload["pacchetto_personalizzato_dettagli"]:
+            conn.close()
+            return render_template_string(
+                BOOKING_HTML,
+                app_name=APP_NAME,
+                error="Hai scelto Personalizzato: inserisci i dettagli della personalizzazione.",
+                today=datetime.now().strftime("%Y-%m-%d"),
+                form=request.form,
+                package_labels=PACKAGE_LABELS,
+                catering_baby_options=CATERING_BABY_OPTIONS,
+                dessert_options=DESSERT_OPTIONS,
+                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                extra_servizi=EXTRA_SERVIZI,
+                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                event_date=event_date,
+                slot_code=slot_code,
+                slot_label=slot_label,
+                area=(3 if is_full else area),
+                is_full=is_full,
+            )
+
+        # Validazioni pacchetti (come nel tuo software)
+        if payload["pacchetto"] == "Lullyland Experience":
+            if payload["catering_baby_choice"] not in CATERING_BABY_OPTIONS.keys():
+                conn.close()
+                return render_template_string(
+                    BOOKING_HTML,
+                    app_name=APP_NAME,
+                    error="Per Experience scegli il Catering baby (Menu pizza o Box merenda).",
+                    today=datetime.now().strftime("%Y-%m-%d"),
+                    form=request.form,
+                    package_labels=PACKAGE_LABELS,
+                    catering_baby_options=CATERING_BABY_OPTIONS,
+                    dessert_options=DESSERT_OPTIONS,
+                    torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                    extra_servizi=EXTRA_SERVIZI,
+                    extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                    event_date=event_date,
+                    slot_code=slot_code,
+                    slot_label=slot_label,
+                    area=(3 if is_full else area),
+                    is_full=is_full,
+                )
+
+            if payload["torta_choice"] not in ("esterna", "interna"):
+                conn.close()
+                return render_template_string(
+                    BOOKING_HTML,
+                    app_name=APP_NAME,
+                    error="Per Experience scegli la torta: Esterna (+EUR 1 a persona) oppure Interna (EUR 24/kg).",
+                    today=datetime.now().strftime("%Y-%m-%d"),
+                    form=request.form,
+                    package_labels=PACKAGE_LABELS,
+                    catering_baby_options=CATERING_BABY_OPTIONS,
+                    dessert_options=DESSERT_OPTIONS,
+                    torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                    extra_servizi=EXTRA_SERVIZI,
+                    extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                    event_date=event_date,
+                    slot_code=slot_code,
+                    slot_label=slot_label,
+                    area=(3 if is_full else area),
+                    is_full=is_full,
+                )
+
+            if payload["torta_choice"] == "interna":
+                if payload["torta_interna_choice"] not in TORTA_INTERNA_FLAVORS.keys():
+                    conn.close()
+                    return render_template_string(
+                        BOOKING_HTML,
+                        app_name=APP_NAME,
+                        error="Se hai scelto Torta interna, seleziona il gusto (standard o altro).",
+                        today=datetime.now().strftime("%Y-%m-%d"),
+                        form=request.form,
+                        package_labels=PACKAGE_LABELS,
+                        catering_baby_options=CATERING_BABY_OPTIONS,
+                        dessert_options=DESSERT_OPTIONS,
+                        torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                        extra_servizi=EXTRA_SERVIZI,
+                        extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                        event_date=event_date,
+                        slot_code=slot_code,
+                        slot_label=slot_label,
+                        area=(3 if is_full else area),
+                        is_full=is_full,
+                    )
+                if payload["torta_interna_choice"] == "altro" and not payload["torta_gusto_altro"]:
+                    conn.close()
+                    return render_template_string(
+                        BOOKING_HTML,
+                        app_name=APP_NAME,
+                        error="Hai scelto gusto torta 'Altro': scrivi il gusto concordato.",
+                        today=datetime.now().strftime("%Y-%m-%d"),
+                        form=request.form,
+                        package_labels=PACKAGE_LABELS,
+                        catering_baby_options=CATERING_BABY_OPTIONS,
+                        dessert_options=DESSERT_OPTIONS,
+                        torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                        extra_servizi=EXTRA_SERVIZI,
+                        extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                        event_date=event_date,
+                        slot_code=slot_code,
+                        slot_label=slot_label,
+                        area=(3 if is_full else area),
+                        is_full=is_full,
+                    )
+
+        if payload["pacchetto"] == "Lullyland all-inclusive":
+            need_torta = (payload["dessert_bimbi_choice"] == "torta_compleanno") or (
+                payload["dessert_adulti_choice"] == "torta_compleanno"
+            )
+            if need_torta:
+                if payload["torta_choice"] not in ("esterna", "interna"):
+                    conn.close()
+                    return render_template_string(
+                        BOOKING_HTML,
+                        app_name=APP_NAME,
+                        error="Per All-inclusive: se scegli la torta come dessert, seleziona Torta esterna oppure Interna.",
+                        today=datetime.now().strftime("%Y-%m-%d"),
+                        form=request.form,
+                        package_labels=PACKAGE_LABELS,
+                        catering_baby_options=CATERING_BABY_OPTIONS,
+                        dessert_options=DESSERT_OPTIONS,
+                        torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                        extra_servizi=EXTRA_SERVIZI,
+                        extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                        event_date=event_date,
+                        slot_code=slot_code,
+                        slot_label=slot_label,
+                        area=(3 if is_full else area),
+                        is_full=is_full,
+                    )
+                if payload["torta_choice"] == "interna":
+                    if payload["torta_interna_choice"] not in TORTA_INTERNA_FLAVORS.keys():
+                        conn.close()
+                        return render_template_string(
+                            BOOKING_HTML,
+                            app_name=APP_NAME,
+                            error="Per All-inclusive: se hai scelto Torta interna, seleziona il gusto (standard o altro).",
+                            today=datetime.now().strftime("%Y-%m-%d"),
+                            form=request.form,
+                            package_labels=PACKAGE_LABELS,
+                            catering_baby_options=CATERING_BABY_OPTIONS,
+                            dessert_options=DESSERT_OPTIONS,
+                            torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                            extra_servizi=EXTRA_SERVIZI,
+                            extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                            event_date=event_date,
+                            slot_code=slot_code,
+                            slot_label=slot_label,
+                            area=(3 if is_full else area),
+                            is_full=is_full,
+                        )
+                    if payload["torta_interna_choice"] == "altro" and not payload["torta_gusto_altro"]:
+                        conn.close()
+                        return render_template_string(
+                            BOOKING_HTML,
+                            app_name=APP_NAME,
+                            error="Per All-inclusive: hai scelto gusto torta 'Altro': scrivi il gusto concordato.",
+                            today=datetime.now().strftime("%Y-%m-%d"),
+                            form=request.form,
+                            package_labels=PACKAGE_LABELS,
+                            catering_baby_options=CATERING_BABY_OPTIONS,
+                            dessert_options=DESSERT_OPTIONS,
+                            torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                            extra_servizi=EXTRA_SERVIZI,
+                            extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                            event_date=event_date,
+                            slot_code=slot_code,
+                            slot_label=slot_label,
+                            area=(3 if is_full else area),
+                            is_full=is_full,
+                        )
 
         totals = compute_totals(payload)
         contract_text = build_contract_text(payload)
 
-        area = next_area(conn, event_date, slot_code)
-
-        cur = conn.cursor()
-        cur.execute(
+        conn.execute(
             """
             INSERT INTO bookings (
                 created_at,
-                nome_festeggiato, eta_festeggiato, data_compleanno, data_evento,
+                event_date, slot_code, area,
+                nome_festeggiato, eta_festeggiato, data_compleanno,
                 madre_nome_cognome, madre_telefono,
                 padre_nome_cognome, padre_telefono,
                 indirizzo_residenza, email,
@@ -959,12 +1133,11 @@ def booking_new():
                 torta_choice, torta_interna_choice, torta_gusto_altro,
                 extra_keys_csv,
                 totale_stimato_eur,
-                dettagli_contratto_text,
-
-                event_date, slot_code, start_time, end_time, area
+                dettagli_contratto_text
             ) VALUES (
                 :created_at,
-                :nome_festeggiato, :eta_festeggiato, :data_compleanno, :data_evento,
+                :event_date, :slot_code, :area,
+                :nome_festeggiato, :eta_festeggiato, :data_compleanno,
                 :madre_nome_cognome, :madre_telefono,
                 :padre_nome_cognome, :padre_telefono,
                 :indirizzo_residenza, :email,
@@ -980,9 +1153,7 @@ def booking_new():
                 :torta_choice, :torta_interna_choice, :torta_gusto_altro,
                 :extra_keys_csv,
                 :totale_stimato_eur,
-                :dettagli_contratto_text,
-
-                :event_date, :slot_code, :start_time, :end_time, :area
+                :dettagli_contratto_text
             )
             """,
             {
@@ -990,17 +1161,12 @@ def booking_new():
                 "extra_keys_csv": ",".join(payload["extra_keys"]),
                 "totale_stimato_eur": str(totals["totale"]),
                 "dettagli_contratto_text": contract_text,
-                "event_date": event_date,
-                "slot_code": slot_code,
-                "start_time": slot["start"],
-                "end_time": slot["end"],
-                "area": area,
             },
         )
         conn.commit()
         conn.close()
 
-        return redirect(url_for("day_view", date_iso=event_date))
+        return redirect(url_for("calendar_day", event_date=event_date))
 
     # GET
     conn.close()
@@ -1017,18 +1183,16 @@ def booking_new():
         extra_servizi=EXTRA_SERVIZI,
         extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
         event_date=event_date,
-        slot=slot,
+        slot_code=slot_code,
+        slot_label=slot_label,
+        area=area,
         is_full=is_full,
     )
 
 
-# Alias per compatibilità (se avevi link vecchi)
-@app.route("/prenota", methods=["GET", "POST"])
-def prenota():
-    # se apri /prenota senza parametri, mando al calendario
-    return redirect(url_for("calendar_month"))
-
-
+# -------------------------
+# LISTA PRENOTAZIONI (per link dal form)
+# -------------------------
 @app.route("/prenotazioni")
 def prenotazioni():
     if not is_logged_in():
@@ -1037,9 +1201,8 @@ def prenotazioni():
     conn = get_db()
     rows = conn.execute(
         """
-        SELECT id, created_at, nome_festeggiato, data_evento, pacchetto,
-               invitati_bambini, invitati_adulti, totale_stimato_eur,
-               event_date, slot_code, area
+        SELECT id, created_at, event_date, slot_code, area, nome_festeggiato,
+               pacchetto, invitati_bambini, invitati_adulti, totale_stimato_eur
         FROM bookings
         ORDER BY id DESC
         """
@@ -1057,7 +1220,6 @@ def prenotazione_dettaglio(booking_id: int):
     conn = get_db()
     row = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     conn.close()
-
     if not row:
         abort(404)
 
@@ -1074,6 +1236,7 @@ def prenotazione_dettaglio(booking_id: int):
         elif tc == "esterna":
             svc_tot = (TORTA_ESTERNASVC_EUR_PER_PERSON * Decimal(tot_persone)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             torta_info = f"{tot_persone} persone -> Servizio torta: EUR {eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} x {tot_persone} = EUR {eur(svc_tot)}"
+
     elif row["pacchetto"] == "Lullyland all-inclusive":
         need_torta = (row["dessert_bimbi_choice"] == "torta_compleanno") or (row["dessert_adulti_choice"] == "torta_compleanno")
         if need_torta:
@@ -1091,8 +1254,6 @@ def prenotazione_dettaglio(booking_id: int):
                     torta_info = "Torta interna (inclusa) - (da definire)"
             else:
                 torta_info = "(da definire)"
-        else:
-            torta_info = "-"
 
     return render_template_string(
         DETAIL_HTML,
@@ -1104,7 +1265,28 @@ def prenotazione_dettaglio(booking_id: int):
 
 
 # -------------------------
-# HTML Templates
+# PDF CONTRATTO
+# -------------------------
+@app.route("/prenotazioni/<int:booking_id>/contratto.pdf")
+def prenotazione_pdf(booking_id: int):
+    if not is_logged_in():
+        return redirect(url_for("login"))
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    conn.close()
+    if not row:
+        abort(404)
+
+    pdf_bytes = contract_pdf_bytes(row)
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"contratto_lullyland_{booking_id}.pdf",
+    )
+    # -------------------------
+# HTML TEMPLATES
 # -------------------------
 LOGIN_HTML = """
 <!doctype html>
@@ -1118,7 +1300,7 @@ LOGIN_HTML = """
     .box { max-width: 420px; margin: 60px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
     input { width: 100%; padding: 12px; font-size: 16px; margin: 10px 0; border-radius:10px; border:1px solid #dcdcdc;}
     button { width: 100%; padding: 12px; font-size: 16px; border-radius:10px; border:none; background:#0a84ff; color:#fff; font-weight:700; }
-    .err { color: #b00020; }
+    .err { color: #b00020; font-weight:700; }
     h2 { margin: 6px 0 14px; }
   </style>
 </head>
@@ -1135,20 +1317,193 @@ LOGIN_HTML = """
 </html>
 """
 
-# ✅ FORM TUO: unica modifica = tolta Data evento e aggiunta fascia calendario + checkbox area3 se pieno
+
+CALENDAR_MONTH_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{app_name}} - Calendario</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 16px; background:#f6f7fb; }
+    .card { max-width: 980px; margin: 16px auto; background:#fff; padding: 16px; border-radius: 12px; border:1px solid #e8e8e8; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+    .btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:800; }
+    .btn2 { display:inline-block; padding:10px 12px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:800; }
+    .nav { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    select { padding:10px; border-radius:10px; border:1px solid #ddd; background:#fff; }
+    .grid { display:grid; grid-template-columns: repeat(7, 1fr); gap:8px; margin-top:12px; }
+    .dow { font-size:12px; color:#666; font-weight:800; text-align:center; }
+    .cell {
+      background:#fff; border:1px solid #eee; border-radius:12px;
+      padding:10px; min-height:64px; position:relative;
+      cursor:pointer;
+    }
+    .cell:hover { border-color:#cfe3ff; }
+    .day { font-weight:900; }
+    .badge {
+      position:absolute; right:8px; bottom:8px;
+      background:#e5f7ee; color:#0b6b3a;
+      font-weight:900; font-size:12px;
+      padding:4px 8px; border-radius:999px;
+      border:1px solid #bfead2;
+    }
+    .empty { background:transparent; border:none; cursor:default; }
+    .muted { color:#666; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="topbar">
+      <div>
+        <div style="font-size:20px; font-weight:900;">📆 Calendario {{app_name}}</div>
+        <div class="muted">Clicca un giorno per vedere slot ed eventi</div>
+      </div>
+      <div class="nav">
+        <a class="btn2" href="/prenotazioni">📄 Prenotazioni</a>
+        <a class="btn2" href="/logout">Esci</a>
+      </div>
+    </div>
+
+    <div class="nav" style="margin-top:12px;">
+      <a class="btn2" href="/calendar?year={{year}}&month={{month-1 if month>1 else 12}}{% if month==1 %}&year={{year-1}}{% endif %}">◀</a>
+
+      <div style="font-weight:900; font-size:18px;">
+        {{month_name[month]}} {{year}}
+      </div>
+
+      <a class="btn2" href="/calendar?year={{year}}&month={{month+1 if month<12 else 1}}{% if month==12 %}&year={{year+1}}{% endif %}">▶</a>
+    </div>
+
+    <div class="grid" style="margin-top:14px;">
+      <div class="dow">Lun</div><div class="dow">Mar</div><div class="dow">Mer</div><div class="dow">Gio</div><div class="dow">Ven</div><div class="dow">Sab</div><div class="dow">Dom</div>
+
+      {# first_weekday: Python = lun(0)..dom(6). Allineiamo #}
+      {% for i in range(first_weekday) %}
+        <div class="cell empty"></div>
+      {% endfor %}
+
+      {% for d in days %}
+        {% set ds = "%04d-%02d-%02d"|format(year, month, d) %}
+        <a class="cell" href="/calendar/{{ds}}" style="text-decoration:none; color:inherit;">
+          <div class="day">{{d}}</div>
+          {% if events_by_day.get(ds) %}
+            <div class="badge">{{events_by_day.get(ds)}} eventi</div>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+CALENDAR_DAY_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{app_name}} - {{event_date}}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 16px; background:#f6f7fb; }
+    .card { max-width: 980px; margin: 16px auto; background:#fff; padding: 16px; border-radius: 12px; border:1px solid #e8e8e8; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+    .btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:900; }
+    .btn2 { display:inline-block; padding:10px 12px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:900; }
+    .slot { border:1px solid #eee; border-radius:12px; padding:12px; margin-top:12px; }
+    .slothead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    .pill { display:inline-block; padding:6px 10px; border-radius:999px; font-weight:900; font-size:12px; }
+    .green { background:#e7f8ee; color:#0b6b3a; border:1px solid #bfead2; }
+    .yellow { background:#fff7db; color:#7a5a00; border:1px solid #f1de9a; }
+    .red { background:#ffe2e2; color:#8b0000; border:1px solid #ffb3b3; }
+    .event { padding:10px; border-radius:12px; background:#f6f7fb; border:1px solid #e8e8e8; margin-top:10px; }
+    .eventline { font-weight:900; }
+    .muted { color:#666; font-size:13px; margin-top:4px; }
+    form { display:inline; }
+    button.danger { border:none; background:#c62828; color:#fff; font-weight:900; padding:8px 10px; border-radius:10px; cursor:pointer; }
+    a.link { color:#0a84ff; font-weight:900; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="topbar">
+      <div>
+        <div style="font-size:18px; font-weight:900;">📅 {{event_date}}</div>
+        <div class="muted">Slot mattina solo Sab/Dom. 2 aree ok, 3ª con conferma.</div>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <a class="btn2" href="/calendar">📆 Calendario</a>
+        <a class="btn2" href="/prenotazioni">📄 Prenotazioni</a>
+      </div>
+    </div>
+
+    {% for scode, slabel in slots %}
+      {% set events = by_slot.get(scode, []) %}
+      {% set c = events|length %}
+      {% if c == 0 %}
+        {% set cls = "green" %}
+        {% set txt = "LIBERO" %}
+      {% elif c == 1 %}
+        {% set cls = "yellow" %}
+        {% set txt = "1 AREA OCCUPATA" %}
+      {% else %}
+        {% set cls = "red" %}
+        {% set txt = "PIENO (Area 1 e 2)" %}
+      {% endif %}
+
+      <div class="slot">
+        <div class="slothead">
+          <div style="font-weight:900;">{{slabel}} ({{"MATTINA" if scode=="MORNING" else "POMERIDIANO/SERALE"}})</div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <span class="pill {{cls}}">{{txt}}</span>
+            <a class="btn" href="/booking/new?event_date={{event_date}}&slot_code={{scode}}">+ Aggiungi evento</a>
+          </div>
+        </div>
+
+        {% if c == 0 %}
+          <div class="muted">Nessun evento in questo slot.</div>
+        {% else %}
+          {% for e in events %}
+            <div class="event">
+              <div class="eventline">
+                Area {{e['area']}}: {{e['nome_festeggiato']}} – {{e['eta_festeggiato'] or '-'}} anni
+                — {{(e['invitati_bambini'] or 0)}} bimbi / {{(e['invitati_adulti'] or 0)}} adulti
+              </div>
+              <div class="muted">Tema: {{e['tema_evento'] or '-'}} — Pacchetto: {{e['pacchetto'] or '-'}}</div>
+              <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
+                <a class="link" href="/prenotazioni/{{e['id']}}">Apri dettaglio</a>
+                <form method="post" action="/event/{{e['id']}}/delete" onsubmit="return confirm('Confermi eliminazione evento?');">
+                  <button class="danger" type="submit">Elimina</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        {% endif %}
+      </div>
+    {% endfor %}
+
+  </div>
+</body>
+</html>
+"""
+
+
 BOOKING_HTML = r"""
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{{app_name}} - Prenotazione evento</title>
+  <title>{{app_name}} - Aggiungi evento</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: Arial, sans-serif; padding: 18px; background:#f6f7fb; }
     .card { max-width: 860px; margin: 18px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
     .row { display:flex; gap:12px; flex-wrap:wrap; }
     .col { flex:1; min-width: 240px; }
-    label { display:block; margin-top: 10px; font-weight: 700; }
+    label { display:block; margin-top: 10px; font-weight: 900; }
     input, select, textarea {
       width: 100%; padding: 12px; font-size: 16px; margin-top: 6px;
       border-radius:10px; border:1px solid #dcdcdc; background:#fff;
@@ -1157,40 +1512,31 @@ BOOKING_HTML = r"""
     .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
     button {
       padding: 12px 14px; font-size: 16px; border-radius:10px; border:none;
-      background:#0a84ff; color:#fff; font-weight:800; cursor:pointer;
+      background:#0a84ff; color:#fff; font-weight:900; cursor:pointer;
     }
-    a.link { display:inline-block; padding: 12px 14px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:800; }
-    .err { color: #b00020; font-weight:700; }
+    a.link { display:inline-block; padding: 12px 14px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:900; }
+    .err { color: #b00020; font-weight:900; }
     .hint { color:#666; font-size: 13px; margin-top:6px; }
+    .section { margin-top: 14px; padding-top: 10px; border-top: 1px solid #eee; }
 
     .sig-wrap { margin-top: 12px; }
     canvas { width:100%; max-width: 760px; height: 220px; border: 2px dashed #bbb; border-radius: 12px; background:#fff; touch-action: none; }
     .sig-actions { display:flex; gap:10px; margin-top:10px; }
     .btn-secondary { background:#333; }
-    .section { margin-top: 14px; padding-top: 10px; border-top: 1px solid #eee; }
 
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
-    .warn { margin-top:12px; padding:12px; border:1px solid #f2a0a0; border-radius:12px; background:#ffe1e1; }
+    .warn {
+      border:2px solid #f59e0b; padding:12px; border-radius:12px;
+      background:#fff7ed; margin-top:12px;
+    }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>Modulo prenotazione evento - {{app_name}}</h2>
-    <p><a href="/day/{{event_date}}"><- Torna al giorno</a></p>
-
-    <div class="pill">Data evento: {{event_date}} · Slot: {{slot.start}}-{{slot.end}} ({{slot.label}})</div>
-
-    {% if is_full %}
-      <div class="warn">
-        <b>Allert:</b> Area 1 e 2 sono già impegnate. Vuoi inserire comunque Area 3?
-        <div style="margin-top:10px;">
-          <label style="font-weight:800;">
-            <input type="checkbox" name="confirm_area3" form="bookingForm">
-            Confermo inserimento Area 3
-          </label>
-        </div>
-      </div>
-    {% endif %}
+    <h2>Aggiungi evento - {{app_name}}</h2>
+    <p>
+      <a href="/calendar/{{event_date}}"><- Giorno</a>
+      <span style="margin-left:10px;"><a href="/calendar">Calendario</a></span>
+    </p>
 
     {% if error %}<p class="err">{{error}}</p>{% endif %}
 
@@ -1198,11 +1544,41 @@ BOOKING_HTML = r"""
 
       <div class="row">
         <div class="col">
+          <label>Data evento (dal calendario)</label>
+          <input value="{{event_date}}" readonly style="background:#f3f4f8;">
+        </div>
+        <div class="col">
+          <label>Slot</label>
+          <input value="{{slot_label}}" readonly style="background:#f3f4f8;">
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col">
+          <label>Area assegnata</label>
+          <input value="Area {{area}}" readonly style="background:#f3f4f8;">
+          <div class="hint">1ª prenotazione Area 1, 2ª Area 2, 3ª Area 3 con conferma.</div>
+        </div>
+      </div>
+
+      {% if is_full %}
+        <div class="warn">
+          <div style="font-weight:900;">⚠️ Area 1 e 2 sono già impegnate</div>
+          <label style="font-weight:900; margin-top:8px;">
+            <input type="checkbox" name="confirm_area3">
+            Confermo inserimento in Area 3
+          </label>
+          <div class="hint">Se non confermi, il salvataggio viene bloccato.</div>
+        </div>
+      {% endif %}
+
+      <div class="row">
+        <div class="col">
           <label>Nome festeggiato *</label>
           <input name="nome_festeggiato" required value="{{form.get('nome_festeggiato','')}}" />
         </div>
         <div class="col">
-          <label>Eta festeggiato</label>
+          <label>Età festeggiato</label>
           <input type="number" name="eta_festeggiato" min="0" value="{{form.get('eta_festeggiato','')}}" />
         </div>
       </div>
@@ -1212,11 +1588,6 @@ BOOKING_HTML = r"""
           <label>Data del compleanno</label>
           <input type="date" name="data_compleanno" value="{{form.get('data_compleanno','')}}" />
         </div>
-        <div class="col">
-          <label>Data dell'evento</label>
-          <input type="text" value="{{event_date}}" disabled />
-          <div class="hint">La data viene dal calendario (non modificabile qui).</div>
-        </div>
       </div>
 
       <div class="row">
@@ -1225,7 +1596,7 @@ BOOKING_HTML = r"""
           <input name="madre_nome_cognome" value="{{form.get('madre_nome_cognome','')}}" />
         </div>
         <div class="col">
-          <label>Numero di telefono madre</label>
+          <label>Telefono madre</label>
           <input name="madre_telefono" value="{{form.get('madre_telefono','')}}" />
         </div>
       </div>
@@ -1236,7 +1607,7 @@ BOOKING_HTML = r"""
           <input name="padre_nome_cognome" value="{{form.get('padre_nome_cognome','')}}" />
         </div>
         <div class="col">
-          <label>Numero di telefono padre</label>
+          <label>Telefono padre</label>
           <input name="padre_telefono" value="{{form.get('padre_telefono','')}}" />
         </div>
       </div>
@@ -1254,11 +1625,11 @@ BOOKING_HTML = r"""
 
       <div class="row">
         <div class="col">
-          <label>Numero invitati bambini</label>
+          <label>Invitati bambini</label>
           <input type="number" name="invitati_bambini" min="0" value="{{form.get('invitati_bambini','')}}" />
         </div>
         <div class="col">
-          <label>Numero invitati adulti</label>
+          <label>Invitati adulti</label>
           <input type="number" name="invitati_adulti" min="0" value="{{form.get('invitati_adulti','')}}" />
         </div>
       </div>
@@ -1274,7 +1645,6 @@ BOOKING_HTML = r"""
             <option value="Lullyland all-inclusive" {% if p=='Lullyland all-inclusive' %}selected{% endif %}>{{package_labels['Lullyland all-inclusive']}}</option>
             <option value="Personalizzato" {% if p=='Personalizzato' %}selected{% endif %}>{{package_labels['Personalizzato']}}</option>
           </select>
-          <div class="hint">I dettagli completi compaiono nel contratto dopo il salvataggio.</div>
         </div>
         <div class="col">
           <label>Tema evento</label>
@@ -1292,17 +1662,150 @@ BOOKING_HTML = r"""
       <label>Note</label>
       <textarea name="note">{{form.get('note','')}}</textarea>
 
-      <!-- QUI SOTTO IL TUO HTML ERA LUNGHISSIMO: lo lascio identico -->
-      <!-- Experience + All-inclusive + extra + firma: già nel tuo originale e funzionano -->
-      <!-- Per non duplicare 2000 righe, tieni il resto identico al tuo file. -->
+      <div class="section" id="experienceBox" style="display:none;">
+        <h3>Opzioni pacchetto Experience</h3>
+
+        <div class="row">
+          <div class="col">
+            <label>Catering baby *</label>
+            {% set cb = form.get('catering_baby_choice','') %}
+            <select name="catering_baby_choice" id="catering_baby_choice">
+              <option value="">Seleziona...</option>
+              <option value="menu_pizza" {% if cb=='menu_pizza' %}selected{% endif %}>Menu pizza</option>
+              <option value="box_merenda" {% if cb=='box_merenda' %}selected{% endif %}>Box merenda</option>
+            </select>
+          </div>
+
+          <div class="col">
+            <label>Torta (scelta) *</label>
+            {% set tc = form.get('torta_choice','') %}
+            <select name="torta_choice" id="torta_choice">
+              <option value="">Seleziona...</option>
+              <option value="esterna" {% if tc=='esterna' %}selected{% endif %}>Torta esterna (+EUR 1,00 a persona)</option>
+              <option value="interna" {% if tc=='interna' %}selected{% endif %}>Torta interna (da noi) (EUR 24,00/kg)</option>
+            </select>
+            <div class="hint">Se interna: calcolo consigliato 100g a testa (bambini+adulti).</div>
+          </div>
+        </div>
+
+        <div class="row" id="tortaInternaBox" style="display:none;">
+          <div class="col">
+            <label>Gusto torta interna *</label>
+            {% set ti = form.get('torta_interna_choice','') %}
+            <select name="torta_interna_choice" id="torta_interna_choice">
+              <option value="">Seleziona...</option>
+              <option value="standard" {% if ti=='standard' %}selected{% endif %}>{{torta_interna_flavors['standard']}}</option>
+              <option value="altro" {% if ti=='altro' %}selected{% endif %}>Altro (scrivi gusto)</option>
+            </select>
+          </div>
+          <div class="col" id="tortaAltroBox" style="display:none;">
+            <label>Gusto concordato (se "Altro") *</label>
+            <input name="torta_gusto_altro" id="torta_gusto_altro" value="{{form.get('torta_gusto_altro','')}}" />
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Servizi extra (seleziona uno o più)</h3>
+          <div class="row">
+            {% for k, v in extra_servizi.items() %}
+              <div class="col" style="min-width:260px;">
+                <label style="font-weight:900;">
+                  <input type="checkbox" name="extra_{{k}}" {% if form.get('extra_' ~ k) %}checked{% endif %}>
+                  {{v[0]}} - EUR {{"{:0.2f}".format(v[1]).replace(".", ",")}}
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="allInclusiveBox" style="display:none;">
+        <h3>Opzioni pacchetto All-inclusive</h3>
+
+        <div class="row">
+          <div class="col">
+            <label>Catering baby (facoltativo)</label>
+            {% set cb2 = form.get('catering_baby_choice','') %}
+            <select name="catering_baby_choice" id="catering_baby_choice_ai">
+              <option value="">Seleziona...</option>
+              <option value="menu_pizza" {% if cb2=='menu_pizza' %}selected{% endif %}>Menu pizza</option>
+              <option value="box_merenda" {% if cb2=='box_merenda' %}selected{% endif %}>Box merenda</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="col">
+            <label>Dessert per bambini (facoltativo)</label>
+            {% set db = form.get('dessert_bimbi_choice','') %}
+            <select name="dessert_bimbi_choice" id="dessert_bimbi_choice">
+              <option value="">Seleziona...</option>
+              <option value="muffin_nutella" {% if db=='muffin_nutella' %}selected{% endif %}>{{dessert_options['muffin_nutella']}}</option>
+              <option value="torta_compleanno" {% if db=='torta_compleanno' %}selected{% endif %}>{{dessert_options['torta_compleanno']}}</option>
+            </select>
+          </div>
+
+          <div class="col">
+            <label>Dessert per adulti (facoltativo)</label>
+            {% set da = form.get('dessert_adulti_choice','') %}
+            <select name="dessert_adulti_choice" id="dessert_adulti_choice">
+              <option value="">Seleziona...</option>
+              <option value="muffin_nutella" {% if da=='muffin_nutella' %}selected{% endif %}>{{dessert_options['muffin_nutella']}}</option>
+              <option value="torta_compleanno" {% if da=='torta_compleanno' %}selected{% endif %}>{{dessert_options['torta_compleanno']}}</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" id="aiTortaBox" style="display:none;">
+          <div class="col">
+            <label>Torta (scelta) (se hai scelto torta come dessert)</label>
+            {% set tc2 = form.get('torta_choice','') %}
+            <select name="torta_choice" id="torta_choice_ai">
+              <option value="">Seleziona...</option>
+              <option value="esterna" {% if tc2=='esterna' %}selected{% endif %}>Torta esterna</option>
+              <option value="interna" {% if tc2=='interna' %}selected{% endif %}>Torta interna (da noi)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" id="aiTortaInternaBox" style="display:none;">
+          <div class="col">
+            <label>Gusto torta interna (se interna)</label>
+            {% set ti2 = form.get('torta_interna_choice','') %}
+            <select name="torta_interna_choice" id="torta_interna_choice_ai">
+              <option value="">Seleziona...</option>
+              <option value="standard" {% if ti2=='standard' %}selected{% endif %}>{{torta_interna_flavors['standard']}}</option>
+              <option value="altro" {% if ti2=='altro' %}selected{% endif %}>Altro (scrivi gusto)</option>
+            </select>
+          </div>
+          <div class="col" id="aiTortaAltroBox" style="display:none;">
+            <label>Gusto concordato (se "Altro")</label>
+            <input name="torta_gusto_altro" id="torta_gusto_altro_ai" value="{{form.get('torta_gusto_altro','')}}" />
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Servizi extra (seleziona uno o più)</h3>
+          <div class="row">
+            {% for k, v in extra_servizi_ai.items() %}
+              <div class="col" style="min-width:260px;">
+                <label style="font-weight:900;">
+                  <input type="checkbox" name="extra_{{k}}" {% if form.get('extra_' ~ k) %}checked{% endif %}>
+                  {{v[0]}} - EUR {{"{:0.2f}".format(v[1]).replace(".", ",")}}
+                </label>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
 
       <div style="margin-top:16px;">
-        <label style="font-weight:700;">
+        <label style="font-weight:900;">
           <input type="checkbox" name="consenso_privacy" required {% if form.get('consenso_privacy') %}checked{% endif %}>
           Dichiaro di aver letto e accettato l'informativa privacy di {{app_name}} *
         </label>
 
-        <label style="margin-top:10px; font-weight:700;">
+        <label style="margin-top:10px; font-weight:900;">
           <input type="checkbox" name="consenso_foto" {% if form.get('consenso_foto') %}checked{% endif %}>
           Autorizzo {{app_name}} a scattare foto/video durante l'evento e a utilizzarli sui canali social
         </label>
@@ -1335,13 +1838,67 @@ BOOKING_HTML = r"""
 
       <div class="actions">
         <button type="submit">Salva evento</button>
-        <a class="link" href="/day/{{event_date}}">Annulla</a>
+        <a class="link" href="/prenotazioni">Vedi prenotazioni</a>
       </div>
     </form>
   </div>
 
 <script>
 (function() {
+  const pacchetto = document.getElementById('pacchetto');
+  const experienceBox = document.getElementById('experienceBox');
+  const allInclusiveBox = document.getElementById('allInclusiveBox');
+  const personalizzatoBox = document.getElementById('personalizzatoBox');
+
+  const tortaChoice = document.getElementById('torta_choice');
+  const tortaInternaBox = document.getElementById('tortaInternaBox');
+  const tortaInternaChoice = document.getElementById('torta_interna_choice');
+  const tortaAltroBox = document.getElementById('tortaAltroBox');
+
+  const dessertBimbi = document.getElementById('dessert_bimbi_choice');
+  const dessertAdulti = document.getElementById('dessert_adulti_choice');
+  const aiTortaBox = document.getElementById('aiTortaBox');
+  const tortaChoiceAI = document.getElementById('torta_choice_ai');
+  const aiTortaInternaBox = document.getElementById('aiTortaInternaBox');
+  const tortaInternaChoiceAI = document.getElementById('torta_interna_choice_ai');
+  const aiTortaAltroBox = document.getElementById('aiTortaAltroBox');
+
+  function refreshVisibility() {
+    const p = pacchetto.value;
+
+    experienceBox.style.display = (p === 'Lullyland Experience') ? 'block' : 'none';
+    allInclusiveBox.style.display = (p === 'Lullyland all-inclusive') ? 'block' : 'none';
+    personalizzatoBox.style.display = (p === 'Personalizzato') ? 'flex' : 'none';
+
+    const tc = tortaChoice ? tortaChoice.value : '';
+    tortaInternaBox.style.display = (p === 'Lullyland Experience' && tc === 'interna') ? 'flex' : 'none';
+    const ti = tortaInternaChoice ? tortaInternaChoice.value : '';
+    tortaAltroBox.style.display = (p === 'Lullyland Experience' && tc === 'interna' && ti === 'altro') ? 'block' : 'none';
+
+    const db = dessertBimbi ? dessertBimbi.value : '';
+    const da = dessertAdulti ? dessertAdulti.value : '';
+    const needTorta = (db === 'torta_compleanno' || da === 'torta_compleanno');
+
+    if (aiTortaBox) aiTortaBox.style.display = (p === 'Lullyland all-inclusive' && needTorta) ? 'flex' : 'none';
+
+    const tc2 = tortaChoiceAI ? tortaChoiceAI.value : '';
+    if (aiTortaInternaBox) aiTortaInternaBox.style.display = (p === 'Lullyland all-inclusive' && needTorta && tc2 === 'interna') ? 'flex' : 'none';
+
+    const ti2 = tortaInternaChoiceAI ? tortaInternaChoiceAI.value : '';
+    if (aiTortaAltroBox) aiTortaAltroBox.style.display = (p === 'Lullyland all-inclusive' && needTorta && tc2 === 'interna' && ti2 === 'altro') ? 'block' : 'none';
+  }
+
+  if (pacchetto) pacchetto.addEventListener('change', refreshVisibility);
+  if (tortaChoice) tortaChoice.addEventListener('change', refreshVisibility);
+  if (tortaInternaChoice) tortaInternaChoice.addEventListener('change', refreshVisibility);
+  if (dessertBimbi) dessertBimbi.addEventListener('change', refreshVisibility);
+  if (dessertAdulti) dessertAdulti.addEventListener('change', refreshVisibility);
+  if (tortaChoiceAI) tortaChoiceAI.addEventListener('change', refreshVisibility);
+  if (tortaInternaChoiceAI) tortaInternaChoiceAI.addEventListener('change', refreshVisibility);
+
+  refreshVisibility();
+
+  // Firma
   const canvas = document.getElementById('sigCanvas');
   const ctx = canvas.getContext('2d');
   let drawing = false;
@@ -1422,6 +1979,7 @@ BOOKING_HTML = r"""
 </html>
 """
 
+
 LIST_HTML = """
 <!doctype html>
 <html>
@@ -1434,16 +1992,20 @@ LIST_HTML = """
     .card { max-width: 980px; margin: 18px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
     table { width:100%; border-collapse: collapse; }
     th, td { padding: 10px; border-bottom:1px solid #eee; text-align:left; }
-    a.btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:800; }
-    a.link { color:#0a84ff; font-weight:700; text-decoration:none; }
+    a.btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:900; }
+    a.btn2 { display:inline-block; padding:10px 12px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:900; }
+    a.link { color:#0a84ff; font-weight:900; text-decoration:none; }
     .muted { color:#666; }
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
+    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:900; }
   </style>
 </head>
 <body>
   <div class="card">
     <h2>Prenotazioni - {{app_name}}</h2>
-    <p><a class="btn" href="/">📆 Calendario</a></p>
+    <p style="display:flex; gap:10px; flex-wrap:wrap;">
+      <a class="btn2" href="/calendar">📆 Calendario</a>
+      <a class="btn2" href="/logout">Esci</a>
+    </p>
 
     {% if rows|length == 0 %}
       <p class="muted">Nessuna prenotazione salvata ancora.</p>
@@ -1452,13 +2014,13 @@ LIST_HTML = """
         <thead>
           <tr>
             <th>ID</th>
-            <th>Data</th>
-            <th>Slot</th>
-            <th>Area</th>
+            <th>Creato</th>
+            <th>Evento</th>
+            <th>Slot/Area</th>
             <th>Festeggiato</th>
             <th>Pacchetto</th>
             <th>Invitati</th>
-            <th>Totale stimato</th>
+            <th>Totale</th>
             <th></th>
           </tr>
         </thead>
@@ -1466,9 +2028,9 @@ LIST_HTML = """
           {% for r in rows %}
             <tr>
               <td>{{r['id']}}</td>
-              <td>{{r['event_date'] or r['data_evento']}}</td>
-              <td>{{r['slot_code'] or '-'}}</td>
-              <td>{{r['area'] or '-'}}</td>
+              <td>{{r['created_at']}}</td>
+              <td>{{r['event_date']}}</td>
+              <td>{{r['slot_code']}} / A{{r['area']}}</td>
               <td>{{r['nome_festeggiato']}}</td>
               <td>{{r['pacchetto']}}</td>
               <td>{{(r['invitati_bambini'] or 0)}} bimbi / {{(r['invitati_adulti'] or 0)}} adulti</td>
@@ -1490,6 +2052,7 @@ LIST_HTML = """
 </html>
 """
 
+
 DETAIL_HTML = """
 <!doctype html>
 <html>
@@ -1503,10 +2066,9 @@ DETAIL_HTML = """
     .grid { display:flex; gap:12px; flex-wrap:wrap; }
     .box { flex:1; min-width: 280px; border:1px solid #eee; border-radius:12px; padding:12px; }
     .k { color:#666; font-size: 12px; margin-bottom:4px; }
-    .v { font-weight: 800; margin-bottom:10px; }
+    .v { font-weight: 900; margin-bottom:10px; }
     img { max-width: 760px; width:100%; border:1px solid #ddd; border-radius:12px; background:#fff; }
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:800; }
-
+    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#f0f2f7; font-weight:900; }
     .contract {
       white-space: pre-wrap;
       font-family: Arial, sans-serif;
@@ -1518,17 +2080,25 @@ DETAIL_HTML = """
       border-radius: 12px;
       border:1px solid #e8e8e8;
     }
+    a.btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:900; }
+    a.btn2 { display:inline-block; padding:10px 12px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:900; }
   </style>
 </head>
 <body>
   <div class="card">
-    <p><a href="/prenotazioni"><- Prenotazioni</a> | <a href="/">Calendario</a></p>
+    <p style="display:flex; gap:10px; flex-wrap:wrap;">
+      <a class="btn2" href="/calendar/{{b['event_date']}}">⬅ Giorno</a>
+      <a class="btn2" href="/calendar">📆 Calendario</a>
+      <a class="btn2" href="/prenotazioni">📄 Prenotazioni</a>
+      <a class="btn" href="/prenotazioni/{{b['id']}}/contratto.pdf">⬇ Scarica PDF</a>
+    </p>
+
     <h2>Dettaglio prenotazione #{{b['id']}} - {{app_name}}</h2>
 
     <div class="grid">
       <div class="box">
-        <div class="k">Calendario</div>
-        <div class="v">{{b['event_date'] or b['data_evento']}} · {{b['slot_code'] or '-'}} · Area {{b['area'] or '-'}}</div>
+        <div class="k">Evento</div>
+        <div class="v">{{b['event_date']}} — {{b['slot_code']}} — Area {{b['area']}}</div>
 
         <div class="k">Festeggiato</div>
         <div class="v">{{b['nome_festeggiato']}} ({{b['eta_festeggiato'] or '-'}})</div>
@@ -1601,5 +2171,8 @@ DETAIL_HTML = """
 """
 
 
+# -------------------------
+# MAIN
+# -------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
