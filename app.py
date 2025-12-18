@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from calendar import monthcalendar, month_name
 
 from flask import Flask, request, redirect, url_for, session, abort, g
@@ -139,7 +139,6 @@ def slot_count(date_iso: str, slot_code: str) -> int:
 # UI helpers
 # -------------------------
 def topbar(active: str = "month"):
-    # pulsante calendario sempre visibile
     return f"""
     <div class="topbar">
       <div class="left">
@@ -172,7 +171,6 @@ BASE_CSS = """
   .bar.yellow{background:#fff8d8;border-color:#f1df86;}
   .bar.red{background:#ffe1e1;border-color:#f2a0a0;}
   .open{display:inline-block;margin-top:8px;font-weight:800;text-decoration:none;}
-  select{padding:10px;border-radius:12px;border:1px solid #ddd;background:#fff;font-weight:700;}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .slot{border:1px solid #ddd;border-radius:14px;background:#fff;padding:12px;margin-top:10px;}
   .slothead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}
@@ -182,7 +180,7 @@ BASE_CSS = """
 
 
 # -------------------------
-# Calendar Month (iPhone-like navigation)
+# Calendar Month (mese corrente + scorrimento)
 # -------------------------
 @app.route("/")
 def calendar_month():
@@ -194,16 +192,7 @@ def calendar_month():
     prev_y, prev_m = (y - 1, 12) if m == 1 else (y, m - 1)
     next_y, next_m = (y + 1, 1) if m == 12 else (y, m + 1)
 
-    # month grid
     weeks = monthcalendar(y, m)
-
-    # month/year selectors
-    month_options = "".join(
-        [f"<option value='{i}' {'selected' if i==m else ''}>{month_name[i]}</option>" for i in range(1, 13)]
-    )
-    year_options = "".join(
-        [f"<option value='{yy}' {'selected' if yy==y else ''}>{yy}</option>" for yy in range(today.year - 3, today.year + 6)]
-    )
 
     cells_html = ""
     for w in weeks:
@@ -214,8 +203,6 @@ def calendar_month():
 
             d_iso = date(y, m, dnum).isoformat()
             c = day_total_events(d_iso)
-
-            # colore barra (semplice per ora): 0 verde, 1 giallo, 2+ rosso
             col = "green" if c == 0 else "yellow" if c == 1 else "red"
 
             cells_html += f"""
@@ -246,12 +233,9 @@ def calendar_month():
       </div>
     </div>
 
-    <form class="row" method="get" action="/" style="margin-top:10px;">
-      <select name="m">{month_options}</select>
-      <select name="y">{year_options}</select>
-      <button class="btn" type="submit">Vai</button>
+    <div class="row" style="margin-top:10px;">
       <a class="btn" href="{url_for('calendar_month', y=today.year, m=today.month)}">Oggi</a>
-    </form>
+    </div>
 
     <div class="grid">
       {cells_html}
@@ -262,7 +246,7 @@ def calendar_month():
 
 
 # -------------------------
-# Year view (optional, quick)
+# Year view (rapida)
 # -------------------------
 @app.route("/year")
 def calendar_year():
@@ -351,7 +335,7 @@ def day_view(date_iso):
     <div class="head">
       <div>
         <h2 style="margin:0;">{d.strftime('%A %d %B %Y')}</h2>
-        <div class="muted">Qui scegli lo slot e aggiungi la festa (stile “+” iPhone)</div>
+        <div class="muted">Scegli lo slot e aggiungi la festa (stile “+” iPhone)</div>
       </div>
       <a class="btn" href="{url_for('calendar_month', y=d.year, m=d.month)}">← Torna al mese</a>
     </div>
@@ -362,7 +346,7 @@ def day_view(date_iso):
 
 
 # -------------------------
-# Booking placeholder (poi ricolleghiamo il software completo)
+# Booking placeholder (poi agganciamo il software completo)
 # -------------------------
 @app.route("/booking/new")
 def booking_new():
