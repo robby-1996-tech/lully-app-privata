@@ -1158,15 +1158,7 @@ CALENDAR_HTML = """
 # -------------------------
 # Le tue 3 HTML principali
 # -------------------------
-BOOKING_HTML = """""" + r"""
-"""  # <-- lasciato vuoto intenzionalmente qui per non spezzare il messaggio
-# ⚠️ Per motivi di limite messaggio, qui sotto reinserisco BOOKING_HTML / LIST_HTML / DETAIL_HTML COMPLETI identici ai tuoi,
-# ma con piccole aggiunte solo per slot/area nella lista e nel dettaglio.
 
-# =========================================================
-# ⬇⬇⬇ INCOLLA QUI SOTTO I TUOI TEMPLATE ORIGINALI
-# =========================================================
-"""
 
 # 🔥 Qui sotto rimetto i tuoi template originali COMPLETI.
 # Nota: BOOKING_HTML resta IDENTICO al tuo (non serve modificarlo per far funzionare calendario).
