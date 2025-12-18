@@ -1,8 +1,8 @@
 import os
 import sqlite3
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
-from calendar import monthcalendar, month_name
+import calendar
 import io
 import base64
 
@@ -22,6 +22,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as pdfcanvas
 from reportlab.lib.units import cm
 from reportlab.lib.utils import ImageReader
+
 
 app = Flask(__name__)
 
@@ -177,7 +178,7 @@ def is_logged_in():
 
 def to_int(val):
     try:
-        return int(val) if val not in (None, "",) else None
+        return int(val) if val not in (None, "") else None
     except Exception:
         return None
 
@@ -186,6 +187,11 @@ def eur(d: Decimal) -> str:
     q = d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     s = f"{q:.2f}"
     return s.replace(".", ",")
+
+
+def parse_event_date(s: str) -> date:
+    # formato atteso: YYYY-MM-DD
+    return datetime.strptime(s, "%Y-%m-%d").date()
 
 
 def slot_label_from_code(code: str) -> str:
@@ -200,6 +206,11 @@ def slots_for_date(d: date):
     return slots
 
 
+def get_slots_for_date(event_date: str):
+    d = parse_event_date(event_date)
+    return slots_for_date(d)
+
+
 def slot_count(conn, event_date: str, slot_code: str) -> int:
     row = conn.execute(
         "SELECT COUNT(*) AS c FROM bookings WHERE event_date=? AND slot_code=?",
@@ -211,7 +222,9 @@ def slot_count(conn, event_date: str, slot_code: str) -> int:
 def next_area_for_slot(count: int) -> int:
     # 0 -> Area1, 1 -> Area2, 2 -> Area3
     return 1 if count == 0 else (2 if count == 1 else 3)
-    # -------------------------
+
+
+# -------------------------
 # Contratto + calcoli
 # -------------------------
 def compute_totals(payload: dict) -> dict:
@@ -329,7 +342,6 @@ def build_contract_text(payload: dict) -> str:
             lines.append("- Catering baby: (da definire)")
 
         lines.append("- Catering adulti: fritti centrali (panzerottini, patatine, bandidos, crocchette), pizze centrali margherita e bibite centrali da 1,5lt (acqua, Coca-Cola, Fanta)")
-
         lines += ["", "NON INCLUDE:", "- Torta di compleanno", ""]
 
         if torta_choice == "esterna":
@@ -486,12 +498,15 @@ def contract_pdf_bytes(booking_row: sqlite3.Row) -> bytes:
     c.drawString(2 * cm, y, f"Prenotazione #{booking_row['id']}  |  Creato: {booking_row['created_at']}")
     y -= 0.6 * cm
 
-    # Info rapide
     c.setFont("Helvetica-Bold", 11)
     c.drawString(2 * cm, y, "Dati evento")
     y -= 0.5 * cm
     c.setFont("Helvetica", 10)
-    c.drawString(2 * cm, y, f"Data: {booking_row['event_date'] or '-'}   Slot: {slot_label_from_code(booking_row['slot_code'] or '')}   Area: {booking_row['area'] or '-'}")
+    c.drawString(
+        2 * cm,
+        y,
+        f"Data: {booking_row['event_date'] or '-'}   Slot: {slot_label_from_code(booking_row['slot_code'] or '')}   Area: {booking_row['area'] or '-'}",
+    )
     y -= 0.6 * cm
 
     c.setFont("Helvetica-Bold", 11)
@@ -501,7 +516,6 @@ def contract_pdf_bytes(booking_row: sqlite3.Row) -> bytes:
     c.drawString(2 * cm, y, f"{booking_row['nome_festeggiato'] or '-'}  -  Età: {booking_row['eta_festeggiato'] or '-'}")
     y -= 0.7 * cm
 
-    # Contratto testuale
     c.setFont("Helvetica-Bold", 11)
     c.drawString(2 * cm, y, "Dettagli (contratto)")
     y -= 0.5 * cm
@@ -511,7 +525,6 @@ def contract_pdf_bytes(booking_row: sqlite3.Row) -> bytes:
     if not text:
         text = "(Nessun dettaglio contratto disponibile.)"
 
-    # wrapping
     max_chars = 105
     lines = []
     for raw in text.split("\n"):
@@ -532,7 +545,6 @@ def contract_pdf_bytes(booking_row: sqlite3.Row) -> bytes:
         c.drawString(2 * cm, y, ln)
         y -= 0.35 * cm
 
-    # Firma (se c'è)
     sig = booking_row["firma_png_base64"] or ""
     if sig.startswith("data:image/png;base64,"):
         try:
@@ -548,7 +560,15 @@ def contract_pdf_bytes(booking_row: sqlite3.Row) -> bytes:
             c.drawString(2 * cm, y, "Firma genitore")
             y -= 0.5 * cm
 
-            c.drawImage(img, 2 * cm, y - 5 * cm, width=10 * cm, height=4 * cm, preserveAspectRatio=True, mask='auto')
+            c.drawImage(
+                img,
+                2 * cm,
+                y - 5 * cm,
+                width=10 * cm,
+                height=4 * cm,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
             y -= 5.5 * cm
         except Exception:
             pass
@@ -556,13 +576,12 @@ def contract_pdf_bytes(booking_row: sqlite3.Row) -> bytes:
     c.showPage()
     c.save()
     return buf.getvalue()
-    # -------------------------
+
+
+# ====== FINE PEZZO 1/5 ======
+# -------------------------
 # AUTH
 # -------------------------
-def is_logged_in():
-    return session.get("ok") is True
-
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -605,28 +624,32 @@ def calendar_month():
     _, days_in_month = calendar.monthrange(year, month)
 
     conn = get_db()
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT event_date, COUNT(*) as cnt
         FROM bookings
         GROUP BY event_date
-    """).fetchall()
+        """
+    ).fetchall()
     conn.close()
 
     events_by_day = {r["event_date"]: r["cnt"] for r in rows}
 
+    # NOTA: nel template uso calendar.month_name, quindi lo passo esplicitamente
     return render_template_string(
         CALENDAR_MONTH_HTML,
         app_name=APP_NAME,
         year=year,
         month=month,
+        month_name=calendar.month_name,
         days=range(1, days_in_month + 1),
-        first_weekday=first_day.weekday(),
+        first_weekday=first_day.weekday(),  # lun(0)..dom(6)
         events_by_day=events_by_day,
     )
 
 
 # -------------------------
-# GIORNO → SLOT
+# GIORNO → SLOT + LISTA EVENTI
 # -------------------------
 @app.route("/calendar/<event_date>")
 def calendar_day(event_date):
@@ -636,13 +659,16 @@ def calendar_day(event_date):
     slots = get_slots_for_date(event_date)
 
     conn = get_db()
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT id, slot_code, area, nome_festeggiato, eta_festeggiato,
                invitati_bambini, invitati_adulti, tema_evento, pacchetto
         FROM bookings
         WHERE event_date = ?
         ORDER BY slot_code, area
-    """, (event_date,)).fetchall()
+        """,
+        (event_date,),
+    ).fetchall()
     conn.close()
 
     by_slot = {}
@@ -669,7 +695,7 @@ def delete_event(booking_id):
     conn = get_db()
     row = conn.execute(
         "SELECT event_date FROM bookings WHERE id = ?",
-        (booking_id,)
+        (booking_id,),
     ).fetchone()
 
     if row:
@@ -681,8 +707,10 @@ def delete_event(booking_id):
 
     conn.close()
     return redirect(url_for("calendar_month"))
-    
-    # -------------------------
+
+
+# ====== FINE PEZZO 2/5 ======
+# -------------------------
 # Helpers calendario
 # -------------------------
 def parse_event_date(s: str) -> date:
@@ -715,8 +743,9 @@ def booking_new():
     conn = get_db()
     count = slot_count(conn, event_date, slot_code)
     area = next_area_for_slot(count)
-    is_full = (count >= 2)  # area1+area2 già occupate
-    is_hard_full = (count >= 3)  # già 3 eventi nello stesso slot
+
+    is_full = (count >= 2)       # Area1+Area2 occupate → serve conferma Area3
+    is_hard_full = (count >= 3)  # già 3 eventi → blocco
 
     if request.method == "POST":
         # Se già 3 presenti, blocco definitivo
@@ -1060,13 +1089,16 @@ def booking_new():
                         dessert_options=DESSERT_OPTIONS,
                         torta_interna_flavors=TORTA_INTERNA_FLAVORS,
                         extra_servizi=EXTRA_SERVIZI,
-                        extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
-                        event_date=event_date,
-                        slot_code=slot_code,
-                        slot_label=slot_label,
-                        area=(3 if is_full else area),
-                        is_full=is_full,
-                    )
+                        extra_servizi_ai=EXTRA_SERVI
+
+# ====== FINE PEZZO 3/5 ======
+                                            extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+                    event_date=event_date,
+                    slot_code=slot_code,
+                    slot_label=slot_label,
+                    area=(3 if is_full else area),
+                    is_full=is_full,
+                )
                 if payload["torta_choice"] == "interna":
                     if payload["torta_interna_choice"] not in TORTA_INTERNA_FLAVORS.keys():
                         conn.close()
@@ -1231,14 +1263,20 @@ def prenotazione_dettaglio(booking_id: int):
     if row["pacchetto"] == "Lullyland Experience":
         tc = (row["torta_choice"] or "").strip()
         if tc == "interna":
-            torta_kg = (Decimal(tot_persone) * KG_PER_PERSON).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            torta_kg = (Decimal(tot_persone) * KG_PER_PERSON).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             torta_info = f"{tot_persone} persone -> ~ {torta_kg} kg (100g a testa) a EUR {eur(TORTA_PRICE_EUR_PER_KG)}/kg"
         elif tc == "esterna":
-            svc_tot = (TORTA_ESTERNASVC_EUR_PER_PERSON * Decimal(tot_persone)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            svc_tot = (TORTA_ESTERNASVC_EUR_PER_PERSON * Decimal(tot_persone)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             torta_info = f"{tot_persone} persone -> Servizio torta: EUR {eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} x {tot_persone} = EUR {eur(svc_tot)}"
 
     elif row["pacchetto"] == "Lullyland all-inclusive":
-        need_torta = (row["dessert_bimbi_choice"] == "torta_compleanno") or (row["dessert_adulti_choice"] == "torta_compleanno")
+        need_torta = (row["dessert_bimbi_choice"] == "torta_compleanno") or (
+            row["dessert_adulti_choice"] == "torta_compleanno"
+        )
         if need_torta:
             tc = (row["torta_choice"] or "").strip()
             if tc == "esterna":
@@ -1285,10 +1323,12 @@ def prenotazione_pdf(booking_id: int):
         as_attachment=True,
         download_name=f"contratto_lullyland_{booking_id}.pdf",
     )
-    # -------------------------
+
+
+# -------------------------
 # HTML TEMPLATES
 # -------------------------
-LOGIN_HTML = """
+              LOGIN_HTML = """
 <!doctype html>
 <html>
 <head>
@@ -1332,7 +1372,6 @@ CALENDAR_MONTH_HTML = """
     .btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:800; }
     .btn2 { display:inline-block; padding:10px 12px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:800; }
     .nav { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    select { padding:10px; border-radius:10px; border:1px solid #ddd; background:#fff; }
     .grid { display:grid; grid-template-columns: repeat(7, 1fr); gap:8px; margin-top:12px; }
     .dow { font-size:12px; color:#666; font-weight:800; text-align:center; }
     .cell {
@@ -1354,6 +1393,7 @@ CALENDAR_MONTH_HTML = """
   </style>
 </head>
 <body>
+  {% set months = ["", "Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno","Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"] %}
   <div class="card">
     <div class="topbar">
       <div>
@@ -1370,7 +1410,7 @@ CALENDAR_MONTH_HTML = """
       <a class="btn2" href="/calendar?year={{year}}&month={{month-1 if month>1 else 12}}{% if month==1 %}&year={{year-1}}{% endif %}">◀</a>
 
       <div style="font-weight:900; font-size:18px;">
-        {{month_name[month]}} {{year}}
+        {{months[month]}} {{year}}
       </div>
 
       <a class="btn2" href="/calendar?year={{year}}&month={{month+1 if month<12 else 1}}{% if month==12 %}&year={{year+1}}{% endif %}">▶</a>
@@ -1379,7 +1419,6 @@ CALENDAR_MONTH_HTML = """
     <div class="grid" style="margin-top:14px;">
       <div class="dow">Lun</div><div class="dow">Mar</div><div class="dow">Mer</div><div class="dow">Gio</div><div class="dow">Ven</div><div class="dow">Sab</div><div class="dow">Dom</div>
 
-      {# first_weekday: Python = lun(0)..dom(6). Allineiamo #}
       {% for i in range(first_weekday) %}
         <div class="cell empty"></div>
       {% endfor %}
@@ -1491,493 +1530,7 @@ CALENDAR_DAY_HTML = """
 """
 
 
-BOOKING_HTML = r"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>{{app_name}} - Aggiungi evento</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: Arial, sans-serif; padding: 18px; background:#f6f7fb; }
-    .card { max-width: 860px; margin: 18px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
-    .row { display:flex; gap:12px; flex-wrap:wrap; }
-    .col { flex:1; min-width: 240px; }
-    label { display:block; margin-top: 10px; font-weight: 900; }
-    input, select, textarea {
-      width: 100%; padding: 12px; font-size: 16px; margin-top: 6px;
-      border-radius:10px; border:1px solid #dcdcdc; background:#fff;
-    }
-    textarea { min-height: 90px; }
-    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
-    button {
-      padding: 12px 14px; font-size: 16px; border-radius:10px; border:none;
-      background:#0a84ff; color:#fff; font-weight:900; cursor:pointer;
-    }
-    a.link { display:inline-block; padding: 12px 14px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:900; }
-    .err { color: #b00020; font-weight:900; }
-    .hint { color:#666; font-size: 13px; margin-top:6px; }
-    .section { margin-top: 14px; padding-top: 10px; border-top: 1px solid #eee; }
-
-    .sig-wrap { margin-top: 12px; }
-    canvas { width:100%; max-width: 760px; height: 220px; border: 2px dashed #bbb; border-radius: 12px; background:#fff; touch-action: none; }
-    .sig-actions { display:flex; gap:10px; margin-top:10px; }
-    .btn-secondary { background:#333; }
-
-    .warn {
-      border:2px solid #f59e0b; padding:12px; border-radius:12px;
-      background:#fff7ed; margin-top:12px;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Aggiungi evento - {{app_name}}</h2>
-    <p>
-      <a href="/calendar/{{event_date}}"><- Giorno</a>
-      <span style="margin-left:10px;"><a href="/calendar">Calendario</a></span>
-    </p>
-
-    {% if error %}<p class="err">{{error}}</p>{% endif %}
-
-    <form method="post" id="bookingForm">
-
-      <div class="row">
-        <div class="col">
-          <label>Data evento (dal calendario)</label>
-          <input value="{{event_date}}" readonly style="background:#f3f4f8;">
-        </div>
-        <div class="col">
-          <label>Slot</label>
-          <input value="{{slot_label}}" readonly style="background:#f3f4f8;">
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col">
-          <label>Area assegnata</label>
-          <input value="Area {{area}}" readonly style="background:#f3f4f8;">
-          <div class="hint">1ª prenotazione Area 1, 2ª Area 2, 3ª Area 3 con conferma.</div>
-        </div>
-      </div>
-
-      {% if is_full %}
-        <div class="warn">
-          <div style="font-weight:900;">⚠️ Area 1 e 2 sono già impegnate</div>
-          <label style="font-weight:900; margin-top:8px;">
-            <input type="checkbox" name="confirm_area3">
-            Confermo inserimento in Area 3
-          </label>
-          <div class="hint">Se non confermi, il salvataggio viene bloccato.</div>
-        </div>
-      {% endif %}
-
-      <div class="row">
-        <div class="col">
-          <label>Nome festeggiato *</label>
-          <input name="nome_festeggiato" required value="{{form.get('nome_festeggiato','')}}" />
-        </div>
-        <div class="col">
-          <label>Età festeggiato</label>
-          <input type="number" name="eta_festeggiato" min="0" value="{{form.get('eta_festeggiato','')}}" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col">
-          <label>Data del compleanno</label>
-          <input type="date" name="data_compleanno" value="{{form.get('data_compleanno','')}}" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col">
-          <label>Nome e cognome madre</label>
-          <input name="madre_nome_cognome" value="{{form.get('madre_nome_cognome','')}}" />
-        </div>
-        <div class="col">
-          <label>Telefono madre</label>
-          <input name="madre_telefono" value="{{form.get('madre_telefono','')}}" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col">
-          <label>Nome e cognome padre</label>
-          <input name="padre_nome_cognome" value="{{form.get('padre_nome_cognome','')}}" />
-        </div>
-        <div class="col">
-          <label>Telefono padre</label>
-          <input name="padre_telefono" value="{{form.get('padre_telefono','')}}" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col">
-          <label>Indirizzo di residenza</label>
-          <input name="indirizzo_residenza" value="{{form.get('indirizzo_residenza','')}}" />
-        </div>
-        <div class="col">
-          <label>Email</label>
-          <input type="email" name="email" value="{{form.get('email','')}}" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col">
-          <label>Invitati bambini</label>
-          <input type="number" name="invitati_bambini" min="0" value="{{form.get('invitati_bambini','')}}" />
-        </div>
-        <div class="col">
-          <label>Invitati adulti</label>
-          <input type="number" name="invitati_adulti" min="0" value="{{form.get('invitati_adulti','')}}" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col">
-          <label>Pacchetto scelto *</label>
-          {% set p = form.get('pacchetto','') %}
-          <select name="pacchetto" id="pacchetto" required>
-            <option value="" {% if p=='' %}selected{% endif %}>Seleziona...</option>
-            <option value="Fai da Te" {% if p=='Fai da Te' %}selected{% endif %}>{{package_labels['Fai da Te']}}</option>
-            <option value="Lullyland Experience" {% if p=='Lullyland Experience' %}selected{% endif %}>{{package_labels['Lullyland Experience']}}</option>
-            <option value="Lullyland all-inclusive" {% if p=='Lullyland all-inclusive' %}selected{% endif %}>{{package_labels['Lullyland all-inclusive']}}</option>
-            <option value="Personalizzato" {% if p=='Personalizzato' %}selected{% endif %}>{{package_labels['Personalizzato']}}</option>
-          </select>
-        </div>
-        <div class="col">
-          <label>Tema evento</label>
-          <input name="tema_evento" value="{{form.get('tema_evento','')}}" />
-        </div>
-      </div>
-
-      <div class="row" id="personalizzatoBox" style="display:none;">
-        <div class="col" style="flex-basis:100%;">
-          <label>Dettagli personalizzazione (solo se "Personalizzato") *</label>
-          <textarea name="pacchetto_personalizzato_dettagli" id="pacchetto_personalizzato_dettagli">{{form.get('pacchetto_personalizzato_dettagli','')}}</textarea>
-        </div>
-      </div>
-
-      <label>Note</label>
-      <textarea name="note">{{form.get('note','')}}</textarea>
-
-      <div class="section" id="experienceBox" style="display:none;">
-        <h3>Opzioni pacchetto Experience</h3>
-
-        <div class="row">
-          <div class="col">
-            <label>Catering baby *</label>
-            {% set cb = form.get('catering_baby_choice','') %}
-            <select name="catering_baby_choice" id="catering_baby_choice">
-              <option value="">Seleziona...</option>
-              <option value="menu_pizza" {% if cb=='menu_pizza' %}selected{% endif %}>Menu pizza</option>
-              <option value="box_merenda" {% if cb=='box_merenda' %}selected{% endif %}>Box merenda</option>
-            </select>
-          </div>
-
-          <div class="col">
-            <label>Torta (scelta) *</label>
-            {% set tc = form.get('torta_choice','') %}
-            <select name="torta_choice" id="torta_choice">
-              <option value="">Seleziona...</option>
-              <option value="esterna" {% if tc=='esterna' %}selected{% endif %}>Torta esterna (+EUR 1,00 a persona)</option>
-              <option value="interna" {% if tc=='interna' %}selected{% endif %}>Torta interna (da noi) (EUR 24,00/kg)</option>
-            </select>
-            <div class="hint">Se interna: calcolo consigliato 100g a testa (bambini+adulti).</div>
-          </div>
-        </div>
-
-        <div class="row" id="tortaInternaBox" style="display:none;">
-          <div class="col">
-            <label>Gusto torta interna *</label>
-            {% set ti = form.get('torta_interna_choice','') %}
-            <select name="torta_interna_choice" id="torta_interna_choice">
-              <option value="">Seleziona...</option>
-              <option value="standard" {% if ti=='standard' %}selected{% endif %}>{{torta_interna_flavors['standard']}}</option>
-              <option value="altro" {% if ti=='altro' %}selected{% endif %}>Altro (scrivi gusto)</option>
-            </select>
-          </div>
-          <div class="col" id="tortaAltroBox" style="display:none;">
-            <label>Gusto concordato (se "Altro") *</label>
-            <input name="torta_gusto_altro" id="torta_gusto_altro" value="{{form.get('torta_gusto_altro','')}}" />
-          </div>
-        </div>
-
-        <div class="section">
-          <h3>Servizi extra (seleziona uno o più)</h3>
-          <div class="row">
-            {% for k, v in extra_servizi.items() %}
-              <div class="col" style="min-width:260px;">
-                <label style="font-weight:900;">
-                  <input type="checkbox" name="extra_{{k}}" {% if form.get('extra_' ~ k) %}checked{% endif %}>
-                  {{v[0]}} - EUR {{"{:0.2f}".format(v[1]).replace(".", ",")}}
-                </label>
-              </div>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-
-      <div class="section" id="allInclusiveBox" style="display:none;">
-        <h3>Opzioni pacchetto All-inclusive</h3>
-
-        <div class="row">
-          <div class="col">
-            <label>Catering baby (facoltativo)</label>
-            {% set cb2 = form.get('catering_baby_choice','') %}
-            <select name="catering_baby_choice" id="catering_baby_choice_ai">
-              <option value="">Seleziona...</option>
-              <option value="menu_pizza" {% if cb2=='menu_pizza' %}selected{% endif %}>Menu pizza</option>
-              <option value="box_merenda" {% if cb2=='box_merenda' %}selected{% endif %}>Box merenda</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="col">
-            <label>Dessert per bambini (facoltativo)</label>
-            {% set db = form.get('dessert_bimbi_choice','') %}
-            <select name="dessert_bimbi_choice" id="dessert_bimbi_choice">
-              <option value="">Seleziona...</option>
-              <option value="muffin_nutella" {% if db=='muffin_nutella' %}selected{% endif %}>{{dessert_options['muffin_nutella']}}</option>
-              <option value="torta_compleanno" {% if db=='torta_compleanno' %}selected{% endif %}>{{dessert_options['torta_compleanno']}}</option>
-            </select>
-          </div>
-
-          <div class="col">
-            <label>Dessert per adulti (facoltativo)</label>
-            {% set da = form.get('dessert_adulti_choice','') %}
-            <select name="dessert_adulti_choice" id="dessert_adulti_choice">
-              <option value="">Seleziona...</option>
-              <option value="muffin_nutella" {% if da=='muffin_nutella' %}selected{% endif %}>{{dessert_options['muffin_nutella']}}</option>
-              <option value="torta_compleanno" {% if da=='torta_compleanno' %}selected{% endif %}>{{dessert_options['torta_compleanno']}}</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="row" id="aiTortaBox" style="display:none;">
-          <div class="col">
-            <label>Torta (scelta) (se hai scelto torta come dessert)</label>
-            {% set tc2 = form.get('torta_choice','') %}
-            <select name="torta_choice" id="torta_choice_ai">
-              <option value="">Seleziona...</option>
-              <option value="esterna" {% if tc2=='esterna' %}selected{% endif %}>Torta esterna</option>
-              <option value="interna" {% if tc2=='interna' %}selected{% endif %}>Torta interna (da noi)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="row" id="aiTortaInternaBox" style="display:none;">
-          <div class="col">
-            <label>Gusto torta interna (se interna)</label>
-            {% set ti2 = form.get('torta_interna_choice','') %}
-            <select name="torta_interna_choice" id="torta_interna_choice_ai">
-              <option value="">Seleziona...</option>
-              <option value="standard" {% if ti2=='standard' %}selected{% endif %}>{{torta_interna_flavors['standard']}}</option>
-              <option value="altro" {% if ti2=='altro' %}selected{% endif %}>Altro (scrivi gusto)</option>
-            </select>
-          </div>
-          <div class="col" id="aiTortaAltroBox" style="display:none;">
-            <label>Gusto concordato (se "Altro")</label>
-            <input name="torta_gusto_altro" id="torta_gusto_altro_ai" value="{{form.get('torta_gusto_altro','')}}" />
-          </div>
-        </div>
-
-        <div class="section">
-          <h3>Servizi extra (seleziona uno o più)</h3>
-          <div class="row">
-            {% for k, v in extra_servizi_ai.items() %}
-              <div class="col" style="min-width:260px;">
-                <label style="font-weight:900;">
-                  <input type="checkbox" name="extra_{{k}}" {% if form.get('extra_' ~ k) %}checked{% endif %}>
-                  {{v[0]}} - EUR {{"{:0.2f}".format(v[1]).replace(".", ",")}}
-                </label>
-              </div>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-
-      <div style="margin-top:16px;">
-        <label style="font-weight:900;">
-          <input type="checkbox" name="consenso_privacy" required {% if form.get('consenso_privacy') %}checked{% endif %}>
-          Dichiaro di aver letto e accettato l'informativa privacy di {{app_name}} *
-        </label>
-
-        <label style="margin-top:10px; font-weight:900;">
-          <input type="checkbox" name="consenso_foto" {% if form.get('consenso_foto') %}checked{% endif %}>
-          Autorizzo {{app_name}} a scattare foto/video durante l'evento e a utilizzarli sui canali social
-        </label>
-      </div>
-
-      <div class="row" style="margin-top:14px;">
-        <div class="col">
-          <label>Acconto (EUR)</label>
-          <input type="text" name="acconto_eur" placeholder="Es: 50,00" value="{{form.get('acconto_eur','')}}" />
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:14px;">
-        <div class="col">
-          <label>Data firma genitore *</label>
-          <input type="date" name="data_firma" required value="{{form.get('data_firma', today)}}" />
-        </div>
-      </div>
-
-      <div class="sig-wrap">
-        <label>Firma genitore (su tablet) *</label>
-        <canvas id="sigCanvas"></canvas>
-        <div class="sig-actions">
-          <button type="button" class="btn-secondary" onclick="clearSig()">Pulisci firma</button>
-        </div>
-        <div class="hint">Firma col dito sul riquadro. Obbligatoria.</div>
-      </div>
-
-      <input type="hidden" name="firma_png_base64" id="firma_png_base64" />
-
-      <div class="actions">
-        <button type="submit">Salva evento</button>
-        <a class="link" href="/prenotazioni">Vedi prenotazioni</a>
-      </div>
-    </form>
-  </div>
-
-<script>
-(function() {
-  const pacchetto = document.getElementById('pacchetto');
-  const experienceBox = document.getElementById('experienceBox');
-  const allInclusiveBox = document.getElementById('allInclusiveBox');
-  const personalizzatoBox = document.getElementById('personalizzatoBox');
-
-  const tortaChoice = document.getElementById('torta_choice');
-  const tortaInternaBox = document.getElementById('tortaInternaBox');
-  const tortaInternaChoice = document.getElementById('torta_interna_choice');
-  const tortaAltroBox = document.getElementById('tortaAltroBox');
-
-  const dessertBimbi = document.getElementById('dessert_bimbi_choice');
-  const dessertAdulti = document.getElementById('dessert_adulti_choice');
-  const aiTortaBox = document.getElementById('aiTortaBox');
-  const tortaChoiceAI = document.getElementById('torta_choice_ai');
-  const aiTortaInternaBox = document.getElementById('aiTortaInternaBox');
-  const tortaInternaChoiceAI = document.getElementById('torta_interna_choice_ai');
-  const aiTortaAltroBox = document.getElementById('aiTortaAltroBox');
-
-  function refreshVisibility() {
-    const p = pacchetto.value;
-
-    experienceBox.style.display = (p === 'Lullyland Experience') ? 'block' : 'none';
-    allInclusiveBox.style.display = (p === 'Lullyland all-inclusive') ? 'block' : 'none';
-    personalizzatoBox.style.display = (p === 'Personalizzato') ? 'flex' : 'none';
-
-    const tc = tortaChoice ? tortaChoice.value : '';
-    tortaInternaBox.style.display = (p === 'Lullyland Experience' && tc === 'interna') ? 'flex' : 'none';
-    const ti = tortaInternaChoice ? tortaInternaChoice.value : '';
-    tortaAltroBox.style.display = (p === 'Lullyland Experience' && tc === 'interna' && ti === 'altro') ? 'block' : 'none';
-
-    const db = dessertBimbi ? dessertBimbi.value : '';
-    const da = dessertAdulti ? dessertAdulti.value : '';
-    const needTorta = (db === 'torta_compleanno' || da === 'torta_compleanno');
-
-    if (aiTortaBox) aiTortaBox.style.display = (p === 'Lullyland all-inclusive' && needTorta) ? 'flex' : 'none';
-
-    const tc2 = tortaChoiceAI ? tortaChoiceAI.value : '';
-    if (aiTortaInternaBox) aiTortaInternaBox.style.display = (p === 'Lullyland all-inclusive' && needTorta && tc2 === 'interna') ? 'flex' : 'none';
-
-    const ti2 = tortaInternaChoiceAI ? tortaInternaChoiceAI.value : '';
-    if (aiTortaAltroBox) aiTortaAltroBox.style.display = (p === 'Lullyland all-inclusive' && needTorta && tc2 === 'interna' && ti2 === 'altro') ? 'block' : 'none';
-  }
-
-  if (pacchetto) pacchetto.addEventListener('change', refreshVisibility);
-  if (tortaChoice) tortaChoice.addEventListener('change', refreshVisibility);
-  if (tortaInternaChoice) tortaInternaChoice.addEventListener('change', refreshVisibility);
-  if (dessertBimbi) dessertBimbi.addEventListener('change', refreshVisibility);
-  if (dessertAdulti) dessertAdulti.addEventListener('change', refreshVisibility);
-  if (tortaChoiceAI) tortaChoiceAI.addEventListener('change', refreshVisibility);
-  if (tortaInternaChoiceAI) tortaInternaChoiceAI.addEventListener('change', refreshVisibility);
-
-  refreshVisibility();
-
-  // Firma
-  const canvas = document.getElementById('sigCanvas');
-  const ctx = canvas.getContext('2d');
-  let drawing = false;
-  let hasInk = false;
-
-  function resizeCanvas() {
-    const rect = canvas.getBoundingClientRect();
-    const ratio = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(rect.width * ratio);
-    canvas.height = Math.floor(rect.height * ratio);
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = '#111';
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, rect.width, rect.height);
-  }
-
-  function getPos(e) {
-    const rect = canvas.getBoundingClientRect();
-    const touch = e.touches && e.touches[0];
-    const clientX = touch ? touch.clientX : e.clientX;
-    const clientY = touch ? touch.clientY : e.clientY;
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }
-
-  function start(e) {
-    e.preventDefault();
-    drawing = true;
-    const p = getPos(e);
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-  }
-
-  function move(e) {
-    if (!drawing) return;
-    e.preventDefault();
-    const p = getPos(e);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    hasInk = true;
-  }
-
-  function end(e) {
-    if (!drawing) return;
-    e.preventDefault();
-    drawing = false;
-  }
-
-  window.clearSig = function() {
-    hasInk = false;
-    resizeCanvas();
-  }
-
-  resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
-
-  canvas.addEventListener('mousedown', start);
-  canvas.addEventListener('mousemove', move);
-  window.addEventListener('mouseup', end);
-
-  canvas.addEventListener('touchstart', start, { passive:false });
-  canvas.addEventListener('touchmove', move, { passive:false });
-  window.addEventListener('touchend', end, { passive:false });
-
-  document.getElementById('bookingForm').addEventListener('submit', function(e) {
-    if (!hasInk) {
-      e.preventDefault();
-      alert("Firma mancante: firma nel riquadro prima di salvare.");
-      return;
-    }
-    const dataUrl = canvas.toDataURL('image/png');
-    document.getElementById('firma_png_base64').value = dataUrl;
-  });
-})();
-</script>
-</body>
-</html>
-"""
+# BOOKING_HTML è GIÀ DEFINITO nel pezzo 4 (non duplicare qui)
 
 
 LIST_HTML = """
@@ -1992,7 +1545,6 @@ LIST_HTML = """
     .card { max-width: 980px; margin: 18px auto; background:#fff; padding: 18px; border-radius: 12px; border:1px solid #e8e8e8; }
     table { width:100%; border-collapse: collapse; }
     th, td { padding: 10px; border-bottom:1px solid #eee; text-align:left; }
-    a.btn { display:inline-block; padding:10px 12px; border-radius:10px; background:#0a84ff; color:#fff; text-decoration:none; font-weight:900; }
     a.btn2 { display:inline-block; padding:10px 12px; border-radius:10px; background:#111; color:#fff; text-decoration:none; font-weight:900; }
     a.link { color:#0a84ff; font-weight:900; text-decoration:none; }
     .muted { color:#666; }
@@ -2175,4 +1727,4 @@ DETAIL_HTML = """
 # MAIN
 # -------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))          
