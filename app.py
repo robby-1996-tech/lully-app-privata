@@ -37,15 +37,15 @@ PACKAGE_PRICES_EUR = {
 }
 
 PACKAGE_LABELS = {
-    "Fai da Te": "Fai da Te €15,00 a persona",
-    "Lullyland Experience": "Lullyland Experience €20,00 a persona",
-    "Lullyland all-inclusive": "Lullyland All-inclusive €30,00 a persona",
+    "Fai da Te": "Fai da Te EUR 15,00 a persona",
+    "Lullyland Experience": "Lullyland Experience EUR 20,00 a persona",
+    "Lullyland all-inclusive": "Lullyland All-inclusive EUR 30,00 a persona",
     "Personalizzato": "Personalizzato",
 }
 
 # Catering baby (usato da Experience + All-inclusive)
 CATERING_BABY_OPTIONS = {
-    "menu_pizza": "Menù pizza",
+    "menu_pizza": "Menu pizza",
     "box_merenda": "Box merenda",
 }
 
@@ -76,9 +76,9 @@ EXTRA_SERVIZI = {
     "mascotte_deluxe": ("Servizio mascotte deluxe", Decimal("90.00")),
 }
 
-# Extra (selezionabili) - usati per All-inclusive (togliamo quelli già inclusi: zucchero, pop, intrattenitore, torta scenografica)
+# Extra (selezionabili) - usati per All-inclusive
 EXTRA_SERVIZI_ALL_INCLUSIVE = {
-    "bolle_sapone": ("Spettacolo bolle di sapone", Decimal("200.00")),  # resta 200 anche se tengono intrattenitore
+    "bolle_sapone": ("Spettacolo bolle di sapone", Decimal("200.00")),
     "mascotte_standard": ("Servizio mascotte standard", Decimal("65.00")),
     "mascotte_deluxe": ("Servizio mascotte deluxe", Decimal("90.00")),
 }
@@ -139,7 +139,7 @@ def init_db():
         """
     )
 
-    # Migrazioni colonne nuove (se la tabella esiste già)
+    # Migrazioni colonne nuove (se la tabella esiste gia)
     ensure_column(conn, "bookings", "acconto_eur", "TEXT")
     ensure_column(conn, "bookings", "pacchetto_personalizzato_dettagli", "TEXT")
 
@@ -150,8 +150,8 @@ def init_db():
     ensure_column(conn, "bookings", "torta_gusto_altro", "TEXT")
 
     # Dessert (All-inclusive)
-    ensure_column(conn, "bookings", "dessert_bimbi_choice", "TEXT")      # muffin_nutella / torta_compleanno
-    ensure_column(conn, "bookings", "dessert_adulti_choice", "TEXT")     # muffin_nutella / torta_compleanno
+    ensure_column(conn, "bookings", "dessert_bimbi_choice", "TEXT")
+    ensure_column(conn, "bookings", "dessert_adulti_choice", "TEXT")
 
     # Extra: salviamo lista in testo (csv keys)
     ensure_column(conn, "bookings", "extra_keys_csv", "TEXT")
@@ -177,7 +177,7 @@ def is_logged_in():
 def to_int(val):
     try:
         return int(val) if val not in (None, "",) else None
-    except:
+    except Exception:
         return None
 
 
@@ -196,7 +196,7 @@ def build_contract_text(payload: dict) -> str:
     lines = []
     if pacchetto in ("Fai da Te", "Lullyland Experience", "Lullyland all-inclusive"):
         price = PACKAGE_PRICES_EUR.get(pacchetto, Decimal("0.00"))
-        lines.append(f"PACCHETTO: {pacchetto} – €{eur(price)} a persona")
+        lines.append(f"PACCHETTO: {pacchetto} - EUR {eur(price)} a persona")
     else:
         lines.append(f"PACCHETTO: {pacchetto}")
 
@@ -214,12 +214,12 @@ def build_contract_text(payload: dict) -> str:
         lines.append("- Sgombero tavoli")
         lines.append("")
         lines.append("NOTE IMPORTANTI (REGOLE):")
-        lines.append("- È obbligatorio fornire certificazione alimentare sia per il buffet che per la torta (fornita dal fornitore da loro scelto)")
-        lines.append("- È obbligatorio acquistare le bibite al nostro bar, non è possibile introdurre bevande dall’esterno")
-        lines.append("- È obbligatorio l’utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
-        lines.append("- È severamente vietato entrare all’interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito €60,00 per ogni mattonella antitrauma forata")
-        lines.append("- È obbligatorio l’utilizzo di copri scarpe all’interno del parco (da noi forniti)")
-        lines.append("- È severamente vietato introdurre cibo e bevande all’interno del parco")
+        lines.append("- E' obbligatorio fornire certificazione alimentare sia per il buffet che per la torta (fornita dal fornitore da loro scelto)")
+        lines.append("- E' obbligatorio acquistare le bibite al nostro bar, non e' possibile introdurre bevande dall'esterno")
+        lines.append("- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
+        lines.append("- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata")
+        lines.append("- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)")
+        lines.append("- E' severamente vietato introdurre cibo e bevande all'interno del parco")
 
     elif pacchetto == "Lullyland Experience":
         catering_choice = payload.get("catering_baby_choice") or ""
@@ -236,9 +236,9 @@ def build_contract_text(payload: dict) -> str:
         lines.append("- Piatti, bicchieri, tovaglioli")
 
         if catering_choice == "menu_pizza":
-            lines.append("- Catering baby: Menù pizza: Pizza Baby, patatine, bottiglietta dell’acqua")
+            lines.append("- Catering baby: Menu pizza: Pizza Baby, patatine, bottiglietta dell'acqua")
         elif catering_choice == "box_merenda":
-            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico würstel, mini pizzetta, panzerottino, patatine fritte, bottiglietta dell’acqua")
+            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico wurstel, mini pizzetta, panzerottino, patatine fritte, bottiglietta dell'acqua")
         else:
             lines.append("- Catering baby: (da definire)")
 
@@ -251,9 +251,9 @@ def build_contract_text(payload: dict) -> str:
         lines.append("")
         if torta_choice == "esterna":
             lines.append("TORTA (ESTERNA):")
-            lines.append(f"- Torta esterna: +€{eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} a persona (servizio torta)")
+            lines.append(f"- Torta esterna: +EUR {eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} a persona (servizio torta)")
         else:
-            lines.append(f"TORTA (SCELTA) (€{eur(TORTA_PRICE_EUR_PER_KG)} al chilo):")
+            lines.append(f"TORTA (SCELTA) (EUR {eur(TORTA_PRICE_EUR_PER_KG)} al chilo):")
             if torta_choice == "interna":
                 if torta_interna_choice == "standard":
                     lines.append(f"- Torta interna (da noi): {TORTA_INTERNA_FLAVORS['standard']}")
@@ -273,17 +273,17 @@ def build_contract_text(payload: dict) -> str:
                 if k in EXTRA_SERVIZI:
                     name, price = EXTRA_SERVIZI[k]
                     tot_extra += price
-                    lines.append(f"- {name} €{eur(price)}")
-            lines.append(f"Totale extra: €{eur(tot_extra)}")
+                    lines.append(f"- {name} EUR {eur(price)}")
+            lines.append(f"Totale extra: EUR {eur(tot_extra)}")
 
         lines.append("")
         lines.append("NOTE IMPORTANTI (REGOLE):")
         if torta_choice == "esterna":
-            lines.append("- (Torta esterna) È obbligatorio fornire certificazione alimentare per la torta (fornita dal fornitore da loro scelto)")
-        lines.append("- È obbligatorio l’utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
-        lines.append("- È severamente vietato entrare all’interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito €60,00 per ogni mattonella antitrauma forata")
-        lines.append("- È obbligatorio l’utilizzo di copri scarpe all’interno del parco (da noi forniti)")
-        lines.append("- È severamente vietato introdurre cibo e bevande all’interno del parco")
+            lines.append("- (Torta esterna) E' obbligatorio fornire certificazione alimentare per la torta (fornita dal fornitore da loro scelto)")
+        lines.append("- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
+        lines.append("- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata")
+        lines.append("- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)")
+        lines.append("- E' severamente vietato introdurre cibo e bevande all'interno del parco")
 
     elif pacchetto == "Lullyland all-inclusive":
         catering_choice = payload.get("catering_baby_choice") or ""
@@ -302,20 +302,18 @@ def build_contract_text(payload: dict) -> str:
         lines.append("- Tavolo torta con gonna e tovaglia monocolore, lavagnetta con nome e anni del festeggiato e sfondo a tema")
         lines.append("- Piatti, bicchieri, tovaglioli")
 
-        # Catering baby (tendina - NON obbligatoria)
         if catering_choice == "menu_pizza":
-            lines.append("- Catering baby: Menù pizza: Pizza Baby, patatine, bottiglietta dell’acqua")
+            lines.append("- Catering baby: Menu pizza: Pizza Baby, patatine, bottiglietta dell'acqua")
         elif catering_choice == "box_merenda":
-            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico würstel, mini pizzetta, panzerottino, patatine fritte e bottiglietta dell’acqua")
+            lines.append("- Catering baby: Box merenda: sandwich con prosciutto cotto, rustico wurstel, mini pizzetta, panzerottino, patatine fritte e bottiglietta dell'acqua")
         else:
             lines.append("- Catering baby: (da definire)")
 
         lines.append("- Catering adulti: tagliere selezione Perina (burratina, ricottina, salumi, ciliegine di mozzarella)")
         lines.append("- Catering adulti: fritti centrali (panzerottini, patatine, bandidos, crocchette)")
-        lines.append("- Catering adulti: pizze in modalità “giro pizza” farcite (fino ad un massimo di una a testa)")
+        lines.append("- Catering adulti: pizze in modalita giro pizza farcite (fino ad un massimo di una a testa)")
         lines.append("- Bibita a testa tra birra, Coca-Cola, Fanta")
 
-        # Dessert bimbi
         if dessert_bimbi == "muffin_nutella":
             lines.append("- Dessert per bambini: Muffin alla Nutella")
         elif dessert_bimbi == "torta_compleanno":
@@ -323,7 +321,6 @@ def build_contract_text(payload: dict) -> str:
         else:
             lines.append("- Dessert per bambini: (da definire)")
 
-        # Dessert adulti
         if dessert_adulti == "muffin_nutella":
             lines.append("- Dessert per adulti: Muffin alla Nutella")
         elif dessert_adulti == "torta_compleanno":
@@ -331,7 +328,6 @@ def build_contract_text(payload: dict) -> str:
         else:
             lines.append("- Dessert per adulti: (da definire)")
 
-        # Torta (solo se qualcuno ha scelto torta come dessert)
         need_torta = (dessert_bimbi == "torta_compleanno") or (dessert_adulti == "torta_compleanno")
         if need_torta:
             lines.append("")
@@ -350,10 +346,9 @@ def build_contract_text(payload: dict) -> str:
 
         lines.append("- Carretto zucchero filato illimitati")
         lines.append("- Carretto pop corn illimitati")
-        lines.append("- Intrattenitore (salvo disponibilità)")
+        lines.append("- Intrattenitore (salvo disponibilita)")
         lines.append("- Torta scenografica (noleggio)")
 
-        # Extra selezionati (ALL-INCLUSIVE)
         extra_keys = payload.get("extra_keys", [])
         if extra_keys:
             lines.append("")
@@ -363,15 +358,15 @@ def build_contract_text(payload: dict) -> str:
                 if k in EXTRA_SERVIZI_ALL_INCLUSIVE:
                     name, price = EXTRA_SERVIZI_ALL_INCLUSIVE[k]
                     tot_extra += price
-                    lines.append(f"- {name} €{eur(price)}")
-            lines.append(f"Totale extra: €{eur(tot_extra)}")
+                    lines.append(f"- {name} EUR {eur(price)}")
+            lines.append(f"Totale extra: EUR {eur(tot_extra)}")
 
         lines.append("")
         lines.append("NOTE IMPORTANTI (REGOLE):")
-        lines.append("- È obbligatorio l’utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
-        lines.append("- È severamente vietato entrare all’interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito €60,00 per ogni mattonella antitrauma forata")
-        lines.append("- È obbligatorio l’utilizzo di copri scarpe all’interno del parco (da noi forniti)")
-        lines.append("- È severamente vietato introdurre cibo e bevande all’interno del parco")
+        lines.append("- E' obbligatorio l'utilizzo di calzini antiscivolo per tutti i bambini che usufruiranno del parco")
+        lines.append("- E' severamente vietato entrare all'interno del parco con scarpe con tacchi (pavimentazione antitrauma in gomma): pena addebito EUR 60,00 per ogni mattonella antitrauma forata")
+        lines.append("- E' obbligatorio l'utilizzo di copri scarpe all'interno del parco (da noi forniti)")
+        lines.append("- E' severamente vietato introdurre cibo e bevande all'interno del parco")
 
     elif pacchetto == "Personalizzato":
         det = (payload.get("pacchetto_personalizzato_dettagli") or "").strip()
@@ -391,7 +386,6 @@ def compute_totals(payload: dict) -> dict:
     base_price = PACKAGE_PRICES_EUR.get(pacchetto, Decimal("0.00"))
     totale_pacchetto = base_price * Decimal(tot_persone)
 
-    # Torta: solo Experience incide sui totali; All-inclusive la torta è inclusa (se scelta come dessert)
     torta_choice = payload.get("torta_choice") or ""
     totale_torta = Decimal("0.00")
     torta_kg = Decimal("0.00")
@@ -403,7 +397,6 @@ def compute_totals(payload: dict) -> dict:
             torta_kg = (Decimal(tot_persone) * KG_PER_PERSON).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             totale_torta = TORTA_PRICE_EUR_PER_KG * torta_kg
 
-    # Extra
     extra_keys = payload.get("extra_keys", [])
     totale_extra = Decimal("0.00")
     if pacchetto == "Lullyland all-inclusive":
@@ -470,7 +463,7 @@ def prenota():
             return render_template_string(
                 BOOKING_HTML,
                 app_name=APP_NAME,
-                error="Devi accettare l’informativa privacy per continuare.",
+                error="Devi accettare l'informativa privacy per continuare.",
                 today=datetime.now().strftime("%Y-%m-%d"),
                 form=request.form,
                 package_labels=PACKAGE_LABELS,
@@ -516,7 +509,6 @@ def prenota():
 
         pacchetto = (request.form.get("pacchetto") or "").strip()
 
-        # Extra keys: dipende dal pacchetto
         extra_keys = []
         if pacchetto == "Lullyland all-inclusive":
             for k in EXTRA_SERVIZI_ALL_INCLUSIVE.keys():
@@ -587,6 +579,21 @@ def prenota():
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
             )
 
+        if not payload["data_evento"]:
+            return render_template_string(
+                BOOKING_HTML,
+                app_name=APP_NAME,
+                error="Seleziona la data dell'evento.",
+                today=datetime.now().strftime("%Y-%m-%d"),
+                form=request.form,
+                package_labels=PACKAGE_LABELS,
+                catering_baby_options=CATERING_BABY_OPTIONS,
+                dessert_options=DESSERT_OPTIONS,
+                torta_interna_flavors=TORTA_INTERNA_FLAVORS,
+                extra_servizi=EXTRA_SERVIZI,
+                extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
+            )
+
         if payload["pacchetto"] not in PACKAGE_LABELS.keys():
             return render_template_string(
                 BOOKING_HTML,
@@ -617,13 +624,12 @@ def prenota():
                 extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
             )
 
-        # Validazioni Experience (come prima)
         if payload["pacchetto"] == "Lullyland Experience":
             if payload["catering_baby_choice"] not in CATERING_BABY_OPTIONS.keys():
                 return render_template_string(
                     BOOKING_HTML,
                     app_name=APP_NAME,
-                    error="Per Experience scegli il Catering baby (Menù pizza o Box merenda).",
+                    error="Per Experience scegli il Catering baby (Menu pizza o Box merenda).",
                     today=datetime.now().strftime("%Y-%m-%d"),
                     form=request.form,
                     package_labels=PACKAGE_LABELS,
@@ -638,7 +644,7 @@ def prenota():
                 return render_template_string(
                     BOOKING_HTML,
                     app_name=APP_NAME,
-                    error="Per Experience scegli la torta: Esterna (+€1 a persona) oppure Interna (€24/kg).",
+                    error="Per Experience scegli la torta: Esterna (+EUR 1 a persona) oppure Interna (EUR 24/kg).",
                     today=datetime.now().strftime("%Y-%m-%d"),
                     form=request.form,
                     package_labels=PACKAGE_LABELS,
@@ -679,7 +685,6 @@ def prenota():
                         extra_servizi_ai=EXTRA_SERVIZI_ALL_INCLUSIVE,
                     )
 
-        # Validazioni All-inclusive (catering NON obbligatorio; dessert se scelgono torta allora chiediamo la scelta torta)
         if payload["pacchetto"] == "Lullyland all-inclusive":
             need_torta = (payload["dessert_bimbi_choice"] == "torta_compleanno") or (payload["dessert_adulti_choice"] == "torta_compleanno")
             if need_torta:
@@ -841,25 +846,25 @@ def prenotazione_dettaglio(booking_id: int):
         tc = (row["torta_choice"] or "").strip()
         if tc == "interna":
             torta_kg = (Decimal(tot_persone) * KG_PER_PERSON).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            torta_info = f"{tot_persone} persone → ~ {torta_kg} kg (100g a testa) a €{eur(TORTA_PRICE_EUR_PER_KG)}/kg"
+            torta_info = f"{tot_persone} persone -> ~ {torta_kg} kg (100g a testa) a EUR {eur(TORTA_PRICE_EUR_PER_KG)}/kg"
         elif tc == "esterna":
             svc_tot = (TORTA_ESTERNASVC_EUR_PER_PERSON * Decimal(tot_persone)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            torta_info = f"{tot_persone} persone → Servizio torta: €{eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} x {tot_persone} = €{eur(svc_tot)}"
+            torta_info = f"{tot_persone} persone -> Servizio torta: EUR {eur(TORTA_ESTERNASVC_EUR_PER_PERSON)} x {tot_persone} = EUR {eur(svc_tot)}"
     elif row["pacchetto"] == "Lullyland all-inclusive":
-        # Se hanno scelto torta come dessert, mostriamo solo scelta (nessun prezzo/kg)
         need_torta = (row["dessert_bimbi_choice"] == "torta_compleanno") or (row["dessert_adulti_choice"] == "torta_compleanno")
         if need_torta:
             tc = (row["torta_choice"] or "").strip()
             if tc == "esterna":
-                torta_info = "Torta esterna (inclusa) – con certificazione alimentare del fornitore"
+                torta_info = "Torta esterna (inclusa) - con certificazione alimentare del fornitore"
             elif tc == "interna":
                 ti = (row["torta_interna_choice"] or "").strip()
                 if ti == "standard":
-                    torta_info = f"Torta interna (inclusa) – {TORTA_INTERNA_FLAVORS['standard']}"
+                    torta_info = f"Torta interna (inclusa) - {TORTA_INTERNA_FLAVORS['standard']}"
                 elif ti == "altro":
-                    torta_info = f"Torta interna (inclusa) – Gusto: {(row['torta_gusto_altro'] or '').strip() or '(da compilare)'}"
+                    gust = (row["torta_gusto_altro"] or "").strip() or "(da compilare)"
+                    torta_info = f"Torta interna (inclusa) - Gusto: {gust}"
                 else:
-                    torta_info = "Torta interna (inclusa) – (da definire)"
+                    torta_info = "Torta interna (inclusa) - (da definire)"
             else:
                 torta_info = "(da definire)"
         else:
@@ -911,7 +916,7 @@ HOME_HTML = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{{app_name}} – App privata</title>
+  <title>{{app_name}} - App privata</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: Arial, sans-serif; padding: 26px; background:#f6f7fb; }
@@ -923,7 +928,7 @@ HOME_HTML = """
 </head>
 <body>
   <div class="card">
-    <h1>{{app_name}} – App privata ✅</h1>
+    <h1>{{app_name}} - App privata</h1>
     <p class="muted">Se vedi questa pagina, il PIN funziona.</p>
 
     <p>
@@ -937,12 +942,12 @@ HOME_HTML = """
 </html>
 """
 
-BOOKING_HTML = """
+BOOKING_HTML = r"""
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{{app_name}} – Prenotazione festa</title>
+  <title>{{app_name}} - Prenotazione festa</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: Arial, sans-serif; padding: 18px; background:#f6f7fb; }
@@ -964,7 +969,6 @@ BOOKING_HTML = """
     .err { color: #b00020; font-weight:700; }
     .hint { color:#666; font-size: 13px; margin-top:6px; }
 
-    /* Signature */
     .sig-wrap { margin-top: 12px; }
     canvas { width:100%; max-width: 760px; height: 220px; border: 2px dashed #bbb; border-radius: 12px; background:#fff; touch-action: none; }
     .sig-actions { display:flex; gap:10px; margin-top:10px; }
@@ -974,8 +978,8 @@ BOOKING_HTML = """
 </head>
 <body>
   <div class="card">
-    <h2>Modulo prenotazione evento – {{app_name}}</h2>
-    <p><a href="/">← Home</a></p>
+    <h2>Modulo prenotazione evento - {{app_name}}</h2>
+    <p><a href="/"><- Home</a></p>
 
     {% if error %}<p class="err">{{error}}</p>{% endif %}
 
@@ -987,7 +991,7 @@ BOOKING_HTML = """
           <input name="nome_festeggiato" required value="{{form.get('nome_festeggiato','')}}" />
         </div>
         <div class="col">
-          <label>Età festeggiato</label>
+          <label>Eta festeggiato</label>
           <input type="number" name="eta_festeggiato" min="0" value="{{form.get('eta_festeggiato','')}}" />
         </div>
       </div>
@@ -998,7 +1002,7 @@ BOOKING_HTML = """
           <input type="date" name="data_compleanno" value="{{form.get('data_compleanno','')}}" />
         </div>
         <div class="col">
-          <label>Data dell’evento</label>
+          <label>Data dell'evento</label>
           <input type="date" name="data_evento" value="{{form.get('data_evento','')}}" />
         </div>
       </div>
@@ -1052,7 +1056,7 @@ BOOKING_HTML = """
           <label>Pacchetto scelto *</label>
           {% set p = form.get('pacchetto','') %}
           <select name="pacchetto" id="pacchetto" required>
-            <option value="" {% if p=='' %}selected{% endif %}>Seleziona…</option>
+            <option value="" {% if p=='' %}selected{% endif %}>Seleziona...</option>
             <option value="Fai da Te" {% if p=='Fai da Te' %}selected{% endif %}>{{package_labels['Fai da Te']}}</option>
             <option value="Lullyland Experience" {% if p=='Lullyland Experience' %}selected{% endif %}>{{package_labels['Lullyland Experience']}}</option>
             <option value="Lullyland all-inclusive" {% if p=='Lullyland all-inclusive' %}selected{% endif %}>{{package_labels['Lullyland all-inclusive']}}</option>
@@ -1068,7 +1072,7 @@ BOOKING_HTML = """
 
       <div class="row" id="personalizzatoBox" style="display:none;">
         <div class="col" style="flex-basis:100%;">
-          <label>Dettagli personalizzazione (solo se “Personalizzato”) *</label>
+          <label>Dettagli personalizzazione (solo se "Personalizzato") *</label>
           <textarea name="pacchetto_personalizzato_dettagli" id="pacchetto_personalizzato_dettagli">{{form.get('pacchetto_personalizzato_dettagli','')}}</textarea>
         </div>
       </div>
@@ -1084,8 +1088,8 @@ BOOKING_HTML = """
             <label>Catering baby *</label>
             {% set cb = form.get('catering_baby_choice','') %}
             <select name="catering_baby_choice" id="catering_baby_choice">
-              <option value="">Seleziona…</option>
-              <option value="menu_pizza" {% if cb=='menu_pizza' %}selected{% endif %}>Menù pizza</option>
+              <option value="">Seleziona...</option>
+              <option value="menu_pizza" {% if cb=='menu_pizza' %}selected{% endif %}>Menu pizza</option>
               <option value="box_merenda" {% if cb=='box_merenda' %}selected{% endif %}>Box merenda</option>
             </select>
           </div>
@@ -1094,9 +1098,9 @@ BOOKING_HTML = """
             <label>Torta (scelta) *</label>
             {% set tc = form.get('torta_choice','') %}
             <select name="torta_choice" id="torta_choice">
-              <option value="">Seleziona…</option>
-              <option value="esterna" {% if tc=='esterna' %}selected{% endif %}>Torta esterna (+€1,00 a persona)</option>
-              <option value="interna" {% if tc=='interna' %}selected{% endif %}>Torta interna (da noi) (€24,00 al chilo)</option>
+              <option value="">Seleziona...</option>
+              <option value="esterna" {% if tc=='esterna' %}selected{% endif %}>Torta esterna (+EUR 1,00 a persona)</option>
+              <option value="interna" {% if tc=='interna' %}selected{% endif %}>Torta interna (da noi) (EUR 24,00 al chilo)</option>
             </select>
             <div class="hint">Se interna: calcolo consigliato 100g a testa (bambini+adulti).</div>
           </div>
@@ -1107,25 +1111,25 @@ BOOKING_HTML = """
             <label>Gusto torta interna *</label>
             {% set ti = form.get('torta_interna_choice','') %}
             <select name="torta_interna_choice" id="torta_interna_choice">
-              <option value="">Seleziona…</option>
+              <option value="">Seleziona...</option>
               <option value="standard" {% if ti=='standard' %}selected{% endif %}>{{torta_interna_flavors['standard']}}</option>
               <option value="altro" {% if ti=='altro' %}selected{% endif %}>Altro (scrivi gusto)</option>
             </select>
           </div>
           <div class="col" id="tortaAltroBox" style="display:none;">
-            <label>Gusto concordato (se “Altro”) *</label>
+            <label>Gusto concordato (se "Altro") *</label>
             <input name="torta_gusto_altro" id="torta_gusto_altro" value="{{form.get('torta_gusto_altro','')}}" />
           </div>
         </div>
 
         <div class="section">
-          <h3>Servizi extra (seleziona uno o più)</h3>
+          <h3>Servizi extra (seleziona uno o piu)</h3>
           <div class="row">
             {% for k, v in extra_servizi.items() %}
               <div class="col" style="min-width:260px;">
                 <label style="font-weight:700;">
                   <input type="checkbox" name="extra_{{k}}" {% if form.get('extra_' ~ k) %}checked{% endif %}>
-                  {{v[0]}} – €{{"{:0.2f}".format(v[1]).replace(".", ",")}}
+                  {{v[0]}} - EUR {{"{:0.2f}".format(v[1]).replace(".", ",")}}
                 </label>
               </div>
             {% endfor %}
@@ -1142,11 +1146,11 @@ BOOKING_HTML = """
             <label>Catering baby (facoltativo)</label>
             {% set cb2 = form.get('catering_baby_choice','') %}
             <select name="catering_baby_choice" id="catering_baby_choice_ai">
-              <option value="">Seleziona…</option>
-              <option value="menu_pizza" {% if cb2=='menu_pizza' %}selected{% endif %}>Menù pizza</option>
+              <option value="">Seleziona...</option>
+              <option value="menu_pizza" {% if cb2=='menu_pizza' %}selected{% endif %}>Menu pizza</option>
               <option value="box_merenda" {% if cb2=='box_merenda' %}selected{% endif %}>Box merenda</option>
             </select>
-            <div class="hint">Se non lo selezioni, resta “da definire”.</div>
+            <div class="hint">Se non lo selezioni, resta "da definire".</div>
           </div>
         </div>
 
@@ -1155,7 +1159,7 @@ BOOKING_HTML = """
             <label>Dessert per bambini (facoltativo)</label>
             {% set db = form.get('dessert_bimbi_choice','') %}
             <select name="dessert_bimbi_choice" id="dessert_bimbi_choice">
-              <option value="">Seleziona…</option>
+              <option value="">Seleziona...</option>
               <option value="muffin_nutella" {% if db=='muffin_nutella' %}selected{% endif %}>{{dessert_options['muffin_nutella']}}</option>
               <option value="torta_compleanno" {% if db=='torta_compleanno' %}selected{% endif %}>{{dessert_options['torta_compleanno']}}</option>
             </select>
@@ -1165,7 +1169,7 @@ BOOKING_HTML = """
             <label>Dessert per adulti (facoltativo)</label>
             {% set da = form.get('dessert_adulti_choice','') %}
             <select name="dessert_adulti_choice" id="dessert_adulti_choice">
-              <option value="">Seleziona…</option>
+              <option value="">Seleziona...</option>
               <option value="muffin_nutella" {% if da=='muffin_nutella' %}selected{% endif %}>{{dessert_options['muffin_nutella']}}</option>
               <option value="torta_compleanno" {% if da=='torta_compleanno' %}selected{% endif %}>{{dessert_options['torta_compleanno']}}</option>
             </select>
@@ -1177,7 +1181,7 @@ BOOKING_HTML = """
             <label>Torta (scelta) (se hai scelto torta come dessert)</label>
             {% set tc2 = form.get('torta_choice','') %}
             <select name="torta_choice" id="torta_choice_ai">
-              <option value="">Seleziona…</option>
+              <option value="">Seleziona...</option>
               <option value="esterna" {% if tc2=='esterna' %}selected{% endif %}>Torta esterna</option>
               <option value="interna" {% if tc2=='interna' %}selected{% endif %}>Torta interna (da noi)</option>
             </select>
@@ -1189,25 +1193,25 @@ BOOKING_HTML = """
             <label>Gusto torta interna (se interna)</label>
             {% set ti2 = form.get('torta_interna_choice','') %}
             <select name="torta_interna_choice" id="torta_interna_choice_ai">
-              <option value="">Seleziona…</option>
+              <option value="">Seleziona...</option>
               <option value="standard" {% if ti2=='standard' %}selected{% endif %}>{{torta_interna_flavors['standard']}}</option>
               <option value="altro" {% if ti2=='altro' %}selected{% endif %}>Altro (scrivi gusto)</option>
             </select>
           </div>
           <div class="col" id="aiTortaAltroBox" style="display:none;">
-            <label>Gusto concordato (se “Altro”)</label>
+            <label>Gusto concordato (se "Altro")</label>
             <input name="torta_gusto_altro" id="torta_gusto_altro_ai" value="{{form.get('torta_gusto_altro','')}}" />
           </div>
         </div>
 
         <div class="section">
-          <h3>Servizi extra (seleziona uno o più)</h3>
+          <h3>Servizi extra (seleziona uno o piu)</h3>
           <div class="row">
             {% for k, v in extra_servizi_ai.items() %}
               <div class="col" style="min-width:260px;">
                 <label style="font-weight:700;">
                   <input type="checkbox" name="extra_{{k}}" {% if form.get('extra_' ~ k) %}checked{% endif %}>
-                  {{v[0]}} – €{{"{:0.2f}".format(v[1]).replace(".", ",")}}
+                  {{v[0]}} - EUR {{"{:0.2f}".format(v[1]).replace(".", ",")}}
                 </label>
               </div>
             {% endfor %}
@@ -1218,24 +1222,21 @@ BOOKING_HTML = """
 
       <div style="margin-top:16px;">
         <label style="font-weight:700;">
-          <input type="checkbox" name="consenso_privacy" required
-                 {% if form.get('consenso_privacy') %}checked{% endif %}>
-          Dichiaro di aver letto e accettato l’informativa privacy di {{app_name}} *
+          <input type="checkbox" name="consenso_privacy" required {% if form.get('consenso_privacy') %}checked{% endif %}>
+          Dichiaro di aver letto e accettato l'informativa privacy di {{app_name}} *
         </label>
         <div class="hint">Obbligatorio.</div>
 
         <label style="margin-top:10px; font-weight:700;">
-          <input type="checkbox" name="consenso_foto"
-                 {% if form.get('consenso_foto') %}checked{% endif %}>
-          Autorizzo {{app_name}} a scattare foto/video durante l’evento e a utilizzarli sui canali social
+          <input type="checkbox" name="consenso_foto" {% if form.get('consenso_foto') %}checked{% endif %}>
+          Autorizzo {{app_name}} a scattare foto/video durante l'evento e a utilizzarli sui canali social
         </label>
         <div class="hint">Facoltativo.</div>
       </div>
 
-      <!-- ✅ SPOSTAMENTO: ACCONTO PIÙ GIÙ (prima di firma) -->
       <div class="row" style="margin-top:14px;">
         <div class="col">
-          <label>Acconto (€)</label>
+          <label>Acconto (EUR)</label>
           <input type="text" name="acconto_eur" placeholder="Es: 50,00" value="{{form.get('acconto_eur','')}}" />
           <div class="hint">Campo libero.</div>
         </div>
@@ -1273,13 +1274,11 @@ BOOKING_HTML = """
   const allInclusiveBox = document.getElementById('allInclusiveBox');
   const personalizzatoBox = document.getElementById('personalizzatoBox');
 
-  // Experience
   const tortaChoice = document.getElementById('torta_choice');
   const tortaInternaBox = document.getElementById('tortaInternaBox');
   const tortaInternaChoice = document.getElementById('torta_interna_choice');
   const tortaAltroBox = document.getElementById('tortaAltroBox');
 
-  // All-inclusive
   const dessertBimbi = document.getElementById('dessert_bimbi_choice');
   const dessertAdulti = document.getElementById('dessert_adulti_choice');
   const aiTortaBox = document.getElementById('aiTortaBox');
@@ -1295,13 +1294,11 @@ BOOKING_HTML = """
     allInclusiveBox.style.display = (p === 'Lullyland all-inclusive') ? 'block' : 'none';
     personalizzatoBox.style.display = (p === 'Personalizzato') ? 'flex' : 'none';
 
-    // Experience: mostra gusto interno solo se scelta interna
     const tc = tortaChoice ? tortaChoice.value : '';
     tortaInternaBox.style.display = (p === 'Lullyland Experience' && tc === 'interna') ? 'flex' : 'none';
     const ti = tortaInternaChoice ? tortaInternaChoice.value : '';
     tortaAltroBox.style.display = (p === 'Lullyland Experience' && tc === 'interna' && ti === 'altro') ? 'block' : 'none';
 
-    // All-inclusive: mostra box torta solo se almeno uno dei dessert = torta
     const db = dessertBimbi ? dessertBimbi.value : '';
     const da = dessertAdulti ? dessertAdulti.value : '';
     const needTorta = (db === 'torta_compleanno' || da === 'torta_compleanno');
@@ -1316,10 +1313,8 @@ BOOKING_HTML = """
   }
 
   if (pacchetto) pacchetto.addEventListener('change', refreshVisibility);
-
   if (tortaChoice) tortaChoice.addEventListener('change', refreshVisibility);
   if (tortaInternaChoice) tortaInternaChoice.addEventListener('change', refreshVisibility);
-
   if (dessertBimbi) dessertBimbi.addEventListener('change', refreshVisibility);
   if (dessertAdulti) dessertAdulti.addEventListener('change', refreshVisibility);
   if (tortaChoiceAI) tortaChoiceAI.addEventListener('change', refreshVisibility);
@@ -1412,7 +1407,7 @@ LIST_HTML = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{{app_name}} – Prenotazioni</title>
+  <title>{{app_name}} - Prenotazioni</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: Arial, sans-serif; padding: 18px; background:#f6f7fb; }
@@ -1427,7 +1422,7 @@ LIST_HTML = """
 </head>
 <body>
   <div class="card">
-    <h2>Prenotazioni – {{app_name}}</h2>
+    <h2>Prenotazioni - {{app_name}}</h2>
     <p>
       <a class="btn" href="/prenota">+ Nuova prenotazione</a>
       <span style="margin-left:10px;"><a href="/">Home</a></span>
@@ -1460,7 +1455,7 @@ LIST_HTML = """
               <td>{{(r['invitati_bambini'] or 0)}} bimbi / {{(r['invitati_adulti'] or 0)}} adulti</td>
               <td>
                 {% if r['totale_stimato_eur'] %}
-                  <span class="pill">€{{"{:0.2f}".format(r['totale_stimato_eur']|float).replace(".", ",")}}</span>
+                  <span class="pill">EUR {{"{:0.2f}".format(r['totale_stimato_eur']|float).replace(".", ",")}}</span>
                 {% else %}
                   -
                 {% endif %}
@@ -1481,7 +1476,7 @@ DETAIL_HTML = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{{app_name}} – Dettaglio prenotazione</title>
+  <title>{{app_name}} - Dettaglio prenotazione</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: Arial, sans-serif; padding: 18px; background:#f6f7fb; }
@@ -1508,8 +1503,8 @@ DETAIL_HTML = """
 </head>
 <body>
   <div class="card">
-    <p><a href="/prenotazioni">← Prenotazioni</a> | <a href="/">Home</a></p>
-    <h2>Dettaglio prenotazione #{{b['id']}} – {{app_name}}</h2>
+    <p><a href="/prenotazioni"><- Prenotazioni</a> | <a href="/">Home</a></p>
+    <h2>Dettaglio prenotazione #{{b['id']}} - {{app_name}}</h2>
 
     <div class="grid">
       <div class="box">
@@ -1534,7 +1529,7 @@ DETAIL_HTML = """
         <div class="k">Totale stimato</div>
         <div class="v">
           {% if b['totale_stimato_eur'] %}
-            <span class="pill">€{{"{:0.2f}".format(b['totale_stimato_eur']|float).replace(".", ",")}}</span>
+            <span class="pill">EUR {{"{:0.2f}".format(b['totale_stimato_eur']|float).replace(".", ",")}}</span>
           {% else %}
             -
           {% endif %}
@@ -1543,10 +1538,10 @@ DETAIL_HTML = """
 
       <div class="box">
         <div class="k">Madre</div>
-        <div class="v">{{b['madre_nome_cognome'] or '-'}} – {{b['madre_telefono'] or '-'}}</div>
+        <div class="v">{{b['madre_nome_cognome'] or '-'}} - {{b['madre_telefono'] or '-'}}</div>
 
         <div class="k">Padre</div>
-        <div class="v">{{b['padre_nome_cognome'] or '-'}} – {{b['padre_telefono'] or '-'}}</div>
+        <div class="v">{{b['padre_nome_cognome'] or '-'}} - {{b['padre_telefono'] or '-'}}</div>
 
         <div class="k">Email</div>
         <div class="v">{{b['email'] or '-'}}</div>
@@ -1555,7 +1550,7 @@ DETAIL_HTML = """
         <div class="v">{{b['indirizzo_residenza'] or '-'}}</div>
 
         <div class="k">Invitati</div>
-        <div class="v">{{b['invitati_bambini'] or 0}} bimbi – {{b['invitati_adulti'] or 0}} adulti</div>
+        <div class="v">{{b['invitati_bambini'] or 0}} bimbi - {{b['invitati_adulti'] or 0}} adulti</div>
 
         <div class="k">Torta</div>
         <div class="v">{{torta_info}}</div>
