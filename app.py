@@ -1,20 +1,21 @@
 import os
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from calendar import monthcalendar, month_name
 
 from flask import (
     Flask, request, redirect, url_for,
-    session, render_template_string,
-    abort, g, flash, get_flashed_messages
+    session, abort, g
 )
 
+# -------------------------
+# CONFIG
+# -------------------------
 app = Flask(__name__)
-APP_NAME = "Lullyland Calendar"
 app.secret_key = os.getenv("SECRET_KEY", "change-me")
 APP_PIN = os.getenv("APP_PIN", "1234")
 DB_PATH = os.getenv("DB_PATH", "lullyland.db")
-
+APP_NAME = "Lullyland – Calendario"
 
 # -------------------------
 # DB
@@ -42,60 +43,45 @@ def init_db():
         end_time TEXT,
         area INTEGER,
         child_name TEXT,
-        child_age INTEGER,
-        kids_count INTEGER,
-        adults_count INTEGER,
-        theme TEXT,
-        package TEXT,
         phone TEXT,
-        deposit_cents INTEGER,
-        notes TEXT,
+        deposit INTEGER,
         created_at TEXT
     )
     """)
     db.commit()
 
-
-# -------------------------
-# AUTH
-# -------------------------
 @app.before_request
-def protect():
+def before():
     init_db()
     if request.endpoint not in ("login", "static") and not session.get("auth"):
         return redirect(url_for("login"))
 
+# -------------------------
+# AUTH
+# -------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         if request.form.get("pin") == APP_PIN:
             session["auth"] = True
             return redirect("/")
-        flash("PIN errato")
-
-    messages = get_flashed_messages()
-    flash_html = f"<div class='flash'>{messages[0]}</div>" if messages else ""
-
-    return render_template_string(f"""
-    <h2>Login {APP_NAME}</h2>
-    {flash_html}
+    return """
+    <h2>Lullyland – App privata</h2>
     <form method="post">
       <input name="pin" placeholder="PIN">
       <button>Entra</button>
     </form>
-    """)
-
+    """
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect("/login")
 
-
 # -------------------------
-# SLOT
+# SLOT RULES
 # -------------------------
-def slots_for_date(d):
+def slots_for_date(d: date):
     slots = [{
         "code": "AFTERNOON",
         "label": "17:00–20:00",
@@ -111,74 +97,89 @@ def slots_for_date(d):
         })
     return slots
 
-def count_bookings(date_iso, slot):
+def count_slot(date_iso, slot_code):
     db = get_db()
     r = db.execute(
         "SELECT COUNT(*) c FROM bookings WHERE event_date=? AND slot_code=?",
-        (date_iso, slot)
+        (date_iso, slot_code)
     ).fetchone()
     return r["c"]
 
-def next_area(date_iso, slot):
-    c = count_bookings(date_iso, slot)
-    return c + 1
-
-
 # -------------------------
-# CALENDAR
+# CALENDARIO MENSILE (HOME)
 # -------------------------
 @app.route("/")
-def calendar_week():
+def calendar_month():
     today = date.today()
-    monday = today - timedelta(days=today.weekday())
-    days = [monday + timedelta(days=i) for i in range(7)]
+    y = int(request.args.get("y", today.year))
+    m = int(request.args.get("m", today.month))
 
-    db = get_db()
+    weeks = monthcalendar(y, m)
+
     html_days = ""
+    for w in weeks:
+        html_days += "<tr>"
+        for d in w:
+            if d == 0:
+                html_days += "<td></td>"
+            else:
+                d_iso = date(y, m, d).isoformat()
+                c = count_slot(d_iso, "AFTERNOON")
+                color = "green" if c == 0 else "orange" if c == 1 else "red"
+                html_days += f"""
+                <td style="padding:10px;border:1px solid #ccc;">
+                  <b>{d}</b><br>
+                  <div style="background:{color};padding:4px;margin-top:4px;">
+                    {c}/2 feste
+                  </div>
+                  <a href="/day/{d_iso}">Apri</a>
+                </td>
+                """
+        html_days += "</tr>"
 
-    for d in days:
-        iso = d.isoformat()
-        slot_html = ""
+    return f"""
+    <h1>{APP_NAME}</h1>
+    <a href="/logout">Esci</a>
+    <h3>{month_name[m]} {y}</h3>
 
-        for s in slots_for_date(d):
-            c = count_bookings(iso, s["code"])
-            color = "green" if c == 0 else "yellow" if c == 1 else "red"
+    <table style="border-collapse:collapse;width:100%;">
+      {html_days}
+    </table>
+    """
 
-            slot_html += f"""
-            <div style="border:1px solid #ccc;padding:6px;margin:4px;background:{color}">
-              {s['label']} – {c}/2
-              <a href="/booking/new?date={iso}&slot={s['code']}">Prenota</a>
-            </div>
-            """
+# -------------------------
+# VISTA GIORNO
+# -------------------------
+@app.route("/day/<date_iso>")
+def day_view(date_iso):
+    try:
+        d = datetime.strptime(date_iso, "%Y-%m-%d").date()
+    except ValueError:
+        abort(404)
 
-        html_days += f"""
-        <div style="border:2px solid #000;padding:10px;margin:10px">
-          <h3>{d.strftime('%A %d/%m')}</h3>
-          {slot_html}
+    slot_html = ""
+    for s in slots_for_date(d):
+        c = count_slot(date_iso, s["code"])
+        slot_html += f"""
+        <div style="border:1px solid #000;padding:10px;margin:10px 0;">
+          <b>{s['label']}</b> – {c}/2
+          <br>
+          <a href="/booking/new?date={date_iso}&slot={s['code']}">
+            ➕ Aggiungi festa
+          </a>
         </div>
         """
 
     return f"""
-    <h1>{APP_NAME} – Settimana</h1>
-    <a href="/logout">Logout</a>
-    {html_days}
+    <h2>{d.strftime('%A %d %B %Y')}</h2>
+    <a href="/">← Torna al calendario</a>
+    {slot_html}
     """
 
-
 # -------------------------
-# BOOKING
+# PRENOTAZIONE (PLACEHOLDER)
 # -------------------------
-def eur_to_cents(v):
-    if not v:
-        return 0
-    v = v.replace(",", ".")
-    if "." in v:
-        a, b = v.split(".")
-        return int(a) * 100 + int(b.ljust(2, "0")[:2])
-    return int(v) * 100
-
-
-@app.route("/booking/new", methods=["GET", "POST"])
+@app.route("/booking/new")
 def booking_new():
     date_iso = request.args.get("date")
     slot = request.args.get("slot")
@@ -186,67 +187,15 @@ def booking_new():
     if not date_iso or not slot:
         abort(400)
 
-    d = datetime.strptime(date_iso, "%Y-%m-%d").date()
-    area = next_area(date_iso, slot)
-    over = area > 2
-
-    if request.method == "POST":
-        if over and not request.form.get("force"):
-            flash("Slot pieno. Conferma Area 3.")
-        else:
-            db = get_db()
-            db.execute("""
-            INSERT INTO bookings VALUES (
-              NULL,?,?,?,?,?,?,?,?,?,?,?,?,?
-            )
-            """, (
-                date_iso, slot,
-                request.form["start"],
-                request.form["end"],
-                area,
-                request.form["child_name"],
-                int(request.form.get("child_age", 0)),
-                int(request.form.get("kids_count", 0)),
-                int(request.form.get("adults_count", 0)),
-                request.form.get("theme"),
-                request.form.get("package"),
-                request.form.get("phone"),
-                eur_to_cents(request.form.get("deposit")),
-                request.form.get("notes"),
-                datetime.now().isoformat()
-            ))
-            db.commit()
-            return redirect("/")
-
-    messages = get_flashed_messages()
-    flash_html = f"<div class='flash'>{messages[0]}</div>" if messages else ""
-
-    s = next(x for x in slots_for_date(d) if x["code"] == slot)
-
     return f"""
-    <h2>Prenota – {date_iso} {s['label']}</h2>
-    {flash_html}
+    <h2>Nuova festa</h2>
+    <p>Data: {date_iso}</p>
+    <p>Slot: {slot}</p>
 
-    <form method="post">
-      <input name="child_name" placeholder="Nome bimbo" required>
-      <input name="child_age" placeholder="Età">
-      <input name="kids_count" placeholder="Bimbi">
-      <input name="adults_count" placeholder="Adulti">
-      <input name="phone" placeholder="Telefono">
-      <input name="deposit" placeholder="Acconto €">
-      <input name="theme" placeholder="Tema">
-      <input name="package" placeholder="Pacchetto">
-      <textarea name="notes"></textarea>
+    <p><i>Qui ricolleghiamo il software di prenotazione completo</i></p>
 
-      <input type="hidden" name="start" value="{s['start']}">
-      <input type="hidden" name="end" value="{s['end']}">
-
-      {"<label><input type='checkbox' name='force'> Confermo Area 3</label>" if over else ""}
-
-      <button>Salva</button>
-    </form>
+    <a href="/day/{date_iso}">← Annulla</a>
     """
-
 
 # -------------------------
 # RUN
