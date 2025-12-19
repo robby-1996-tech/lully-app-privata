@@ -447,8 +447,19 @@ def build_contract_pdf_bytes(row: sqlite3.Row) -> io.BytesIO:
             c.showPage()
             y = h - margin
             c.setFont("Helvetica", 11)
+
+        # ReportLab con i font base (Helvetica) non supporta tutto l'UTF-8.
+        # Convertiamo a WinAnsi/Latin-1 sostituendo i caratteri non supportati,
+        # così evitiamo errori 500 su nomi/temi con emoji o accenti particolari.
+        if text is None:
+            text = ""
+        try:
+            safe = str(text).encode("latin-1", "replace").decode("latin-1")
+        except Exception:
+            safe = str(text)
+
         c.setFont(font, size)
-        c.drawString(margin, y, text)
+        c.drawString(margin, y, safe)
         y -= leading
 
     # Header
@@ -1626,7 +1637,7 @@ LIST_HTML = """<!doctype html>
                   <span class="pill">EUR {{"{:0.2f}".format(r['totale_stimato_eur']|float).replace(".", ",")}}</span>
                 {% else %}-{% endif %}
               </td>
-              <td><a class="link" href="/prenotazioni/{{r['id']}}">Apri</a></td>
+              <td><a class="link" href="/prenotazioni/{{r['id']}}">Apri</a> &nbsp; <a class="link" title="Scarica PDF" href="/prenotazioni/{{r['id']}}/contratto.pdf">📥 PDF</a></td>
             </tr>
           {% endfor %}
         </tbody>
