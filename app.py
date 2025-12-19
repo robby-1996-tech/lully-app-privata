@@ -790,12 +790,13 @@ def booking_new():
 
         if payload["pacchetto"] == "Lullyland all-inclusive":
             # NEW: dropdown muffin o torta, poi (se torta) classica o altro (+ campo)
-            if payload["dessert_bimbi_choice"] not in ("muffin_nutella", "torta_compleanno"):
+            # Dessert bimbi/adulti NON obbligatori: se compilati, devono essere validi
+            if payload["dessert_bimbi_choice"] and payload["dessert_bimbi_choice"] not in ("muffin_nutella", "torta_compleanno"):
                 conn.close()
-                return render_form("All-inclusive: scegli dessert bimbi (Muffin o Torta).", request.form)
-            if payload["dessert_adulti_choice"] not in ("muffin_nutella", "torta_compleanno"):
+                return render_form("All-inclusive: dessert bimbi non valido.", request.form)
+            if payload["dessert_adulti_choice"] and payload["dessert_adulti_choice"] not in ("muffin_nutella", "torta_compleanno"):
                 conn.close()
-                return render_form("All-inclusive: scegli dessert adulti (Muffin o Torta).", request.form)
+                return render_form("All-inclusive: dessert adulti non valido.", request.form)
 
             need_torta = (payload["dessert_bimbi_choice"] == "torta_compleanno") or (payload["dessert_adulti_choice"] == "torta_compleanno")
             if need_torta:
@@ -1201,7 +1202,7 @@ BOOKING_HTML = r"""<!doctype html>
 
         <div class="row">
           <div class="col">
-            <label>Dessert per bambini *</label>
+            <label>Dessert per bambini</label>
             {% set db = form.get('dessert_bimbi_choice','') %}
             <select name="dessert_bimbi_choice" id="dessert_bimbi_choice">
               <option value="" {% if db=='' %}selected{% endif %}>Seleziona...</option>
@@ -1211,7 +1212,7 @@ BOOKING_HTML = r"""<!doctype html>
           </div>
 
           <div class="col">
-            <label>Dessert per adulti *</label>
+            <label>Dessert per adulti</label>
             {% set da = form.get('dessert_adulti_choice','') %}
             <select name="dessert_adulti_choice" id="dessert_adulti_choice">
               <option value="" {% if da=='' %}selected{% endif %}>Seleziona...</option>
