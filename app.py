@@ -1,11 +1,18 @@
 # app_lullyland_completo_v2.py
 import os
 import sqlite3
+import base64
+import io
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
 from calendar import monthcalendar, month_name
 
-from flask import Flask, request, redirect, url_for, session, render_template_string, abort
+from flask import Flask, request, redirect, url_for, session, render_template_string, abort, send_file
+
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 
 app = Flask(__name__)
 
@@ -403,6 +410,119 @@ def compute_totals(payload: dict) -> dict:
     return {"totale": totale, "totale_pacchetto": totale_pacchetto, "totale_torta": totale_torta, "totale_extra": totale_extra}
 
 # -------------------------
+# PDF: contratto scaricabile
+# -------------------------
+def _wrap_text(text: str, max_chars: int):
+    lines = []
+    for raw in (text or "").splitlines():
+        s = raw.rstrip()
+        if not s:
+            lines.append("")
+            continue
+        while len(s) > max_chars:
+            cut = s.rfind(" ", 0, max_chars)
+            if cut <= 0:
+                cut = max_chars
+            lines.append(s[:cut].rstrip())
+            s = s[cut:].lstrip()
+        lines.append(s)
+    return lines
+
+def build_contract_pdf_bytes(row: sqlite3.Row) -> io.BytesIO:
+    buf = io.BytesIO()
+    c = pdf_canvas.Canvas(buf, pagesize=A4)
+    w, h = A4
+
+    margin = 18 * mm
+    y = h - margin
+
+    def draw_line(text, font="Helvetica", size=11, leading=14):
+        nonlocal y
+        if y < margin + 40:
+            c.showPage()
+            y = h - margin
+            c.setFont("Helvetica", 11)
+        c.setFont(font, size)
+        c.drawString(margin, y, text)
+        y -= leading
+
+    # Header
+    c.setTitle(f"Contratto prenotazione {APP_NAME} #{row['id']}")
+    draw_line(f"{APP_NAME} - Contratto prenotazione", font="Helvetica-Bold", size=16, leading=20)
+    draw_line(f"Prenotazione #{row['id']}  |  Creato: {row['created_at'] or '-'}", size=10, leading=14)
+    draw_line("")
+
+    # Dati evento
+    ev_date = (row["event_date"] or row["data_evento"] or "-")
+    slot = (row["slot_code"] or "-")
+    area = (row["area"] or "-")
+    draw_line("Dati evento", font="Helvetica-Bold", size=12, leading=16)
+    draw_line(f"Data: {ev_date}   Slot: {slot}   Area: {area}")
+    draw_line(f"Festeggiato: {row['nome_festeggiato'] or '-'}  (Eta: {row['eta_festeggiato'] or '-'})")
+    draw_line(f"Invitati: {(row['invitati_bambini'] or 0)} bimbi / {(row['invitati_adulti'] or 0)} adulti")
+    draw_line(f"Pacchetto: {row['pacchetto'] or '-'}")
+    if row["tema_evento"]:
+        draw_line(f"Tema evento: {row['tema_evento']}")
+    if row["note"]:
+        draw_line(f"Note: {row['note']}")
+    if row["acconto_eur"]:
+        draw_line(f"Acconto: EUR {row['acconto_eur']}")
+    if row["totale_stimato_eur"]:
+        try:
+            tot = Decimal(str(row["totale_stimato_eur"]))
+            draw_line(f"Totale stimato: EUR {eur(tot)}")
+        except Exception:
+            draw_line(f"Totale stimato: EUR {row['totale_stimato_eur']}")
+    draw_line("")
+
+    # Genitori/contatti
+    draw_line("Dati genitore/i", font="Helvetica-Bold", size=12, leading=16)
+    if row["madre_nome_cognome"] or row["madre_telefono"]:
+        draw_line(f"Madre: {row['madre_nome_cognome'] or '-'}  |  Tel: {row['madre_telefono'] or '-'}")
+    if row["padre_nome_cognome"] or row["padre_telefono"]:
+        draw_line(f"Padre: {row['padre_nome_cognome'] or '-'}  |  Tel: {row['padre_telefono'] or '-'}")
+    if row["indirizzo_residenza"]:
+        draw_line(f"Indirizzo: {row['indirizzo_residenza']}")
+    if row["email"]:
+        draw_line(f"Email: {row['email']}")
+    draw_line("")
+
+    # Corpo contratto
+    draw_line("Dettagli pacchetto (contratto)", font="Helvetica-Bold", size=12, leading=16)
+    contract_text = row["dettagli_contratto_text"] or ""
+    for ln in _wrap_text(contract_text, max_chars=95):
+        draw_line(ln, font="Helvetica", size=10, leading=12)
+
+    draw_line("")
+    # Firma
+    draw_line("Firma", font="Helvetica-Bold", size=12, leading=16)
+    draw_line(f"Data firma: {row['data_firma'] or '-'}", size=10, leading=14)
+
+    sig = (row["firma_png_base64"] or "").strip()
+    if sig.startswith("data:image/png;base64,"):
+        try:
+            b64 = sig.split(",", 1)[1]
+            img_bytes = base64.b64decode(b64)
+            img = ImageReader(io.BytesIO(img_bytes))
+
+            img_w = 90 * mm
+            img_h = 35 * mm
+            if y - img_h < margin:
+                c.showPage()
+                y = h - margin
+            c.drawImage(img, margin, y - img_h, width=img_w, height=img_h, preserveAspectRatio=True, mask='auto')
+            y -= (img_h + 10)
+        except Exception:
+            draw_line("(Firma non disponibile in PDF)", size=10, leading=14)
+    else:
+        draw_line("(Firma non disponibile in PDF)", size=10, leading=14)
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf
+
+# -------------------------
 # Calendario: slot rules
 # -------------------------
 def slots_for_date(d: date):
@@ -659,6 +779,7 @@ def day_view(date_iso):
 </div>
 </body></html>
 """
+
 
 @app.route("/booking/new", methods=["GET", "POST"])
 def booking_new():
@@ -960,6 +1081,21 @@ def prenotazione_dettaglio(booking_id: int):
 
     return render_template_string(DETAIL_HTML, app_name=APP_NAME, b=row, torta_info=torta_info)
 
+@app.route("/prenotazioni/<int:booking_id>/contratto.pdf")
+def prenotazione_contratto_pdf(booking_id: int):
+    if not is_logged_in():
+        return redirect(url_for("login"))
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    conn.close()
+    if not row:
+        abort(404)
+
+    pdf_buf = build_contract_pdf_bytes(row)
+    filename = f"contratto_prenotazione_{booking_id}.pdf"
+    return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, download_name=filename)
+
 LOGIN_HTML = """<!doctype html>
 <html>
 <head>
@@ -987,6 +1123,8 @@ LOGIN_HTML = """<!doctype html>
 </body>
 </html>
 """
+
+
 
 BOOKING_HTML = r"""<!doctype html>
 <html>
@@ -1508,12 +1646,15 @@ DETAIL_HTML = """<!doctype html>
     .v { font-weight: 800; margin-bottom:10px; }
     img { max-width: 760px; width:100%; border:1px solid #ddd; border-radius:12px; background:#fff; }
     .contract { white-space: pre-wrap; background:#f6f7fb; padding: 14px; border-radius: 12px; border:1px solid #e8e8e8; }
+    a.btnpdf { display:inline-block; margin-top:10px; padding:10px 12px; border-radius:12px; background:#111; color:#fff; text-decoration:none; font-weight:900; }
   </style>
 </head>
 <body>
   <div class="card">
     <p><a href="/prenotazioni"><- Prenotazioni</a> | <a href="/">Calendario</a></p>
     <h2>Dettaglio prenotazione #{{b['id']}} - {{app_name}}</h2>
+
+    <a class="btnpdf" href="/prenotazioni/{{b['id']}}/contratto.pdf">⬇️ Scarica contratto PDF</a>
 
     <div class="box">
       <div class="k">Calendario</div>
