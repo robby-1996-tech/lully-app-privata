@@ -169,6 +169,17 @@ def to_int(val):
         return None
 
 
+
+def first_nonempty(values):
+    """Return first non-empty string from a list-like; otherwise ''"""
+    for v in values or []:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
+
 def eur(d: Decimal) -> str:
     q = d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     s = f"{q:.2f}"
@@ -751,8 +762,8 @@ def booking_new():
             "dessert_bimbi_choice": (request.form.get("dessert_bimbi_choice") or "").strip(),
             "dessert_adulti_choice": (request.form.get("dessert_adulti_choice") or "").strip(),
             "torta_choice": (request.form.get("torta_choice") or "").strip(),
-            "torta_interna_choice": (request.form.get("torta_interna_choice") or "").strip(),
-            "torta_gusto_altro": (request.form.get("torta_gusto_altro") or "").strip(),
+            "torta_interna_choice": first_nonempty(request.form.getlist("torta_interna_choice")),
+            "torta_gusto_altro": first_nonempty(request.form.getlist("torta_gusto_altro")),
             "extra_keys": extra_keys,
         }
 
