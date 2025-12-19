@@ -1108,14 +1108,22 @@ def prenotazione_contratto_pdf(booking_id: int):
     if not row:
         abort(404)
 
-    pdf_buf = build_contract_pdf_bytes(row)
-    filename = f"contratto_prenotazione_{booking_id}.pdf"
-
-    # Flask >= 2 usa "download_name", Flask < 2 usa "attachment_filename"
     try:
-        return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, download_name=filename)
-    except TypeError:
-        return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, attachment_filename=filename)
+        pdf_buf = build_contract_pdf_bytes(row)
+        filename = f"contratto_prenotazione_{booking_id}.pdf"
+
+        # Flask >= 2 usa "download_name", Flask < 2 usa "attachment_filename"
+        try:
+            return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, download_name=filename)
+        except TypeError:
+            return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, attachment_filename=filename)
+    except Exception as e:
+        # Mostra un errore leggibile anche su Render (così puoi mandarmi lo screenshot).
+        return (
+            f"<h2>Errore generazione PDF</h2><pre>{str(e)}</pre>"
+            "<p>Controlla che siano installati i pacchetti: reportlab e Pillow (vedi requirements.txt).</p>",
+            500,
+        )
 
 LOGIN_HTML = """<!doctype html>
 <html>
