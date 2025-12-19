@@ -801,12 +801,11 @@ def booking_new():
             need_torta = (payload["dessert_bimbi_choice"] == "torta_compleanno") or (payload["dessert_adulti_choice"] == "torta_compleanno")
             if need_torta:
                 payload["torta_choice"] = "interna"  # sempre interna e inclusa
-                if payload["torta_interna_choice"] not in ("standard", "altro"):
+                # La scelta "Classica/Altro" e l'eventuale gusto NON sono obbligatori.
+                # Se non vengono compilati, nel contratto resteranno "(da definire)" / "(da compilare)".
+                if payload["torta_interna_choice"] and payload["torta_interna_choice"] not in ("standard", "altro"):
                     conn.close()
-                    return render_form("Se scegli Torta (All-inclusive): seleziona Classica o Altro.", request.form)
-                if payload["torta_interna_choice"] == "altro" and not payload["torta_gusto_altro"]:
-                    conn.close()
-                    return render_form("Hai scelto Altro: scrivi il gusto della torta.", request.form)
+                    return render_form("All-inclusive: scelta torta non valida.", request.form)
             else:
                 payload["torta_choice"] = ""
                 payload["torta_interna_choice"] = ""
@@ -1224,7 +1223,7 @@ BOOKING_HTML = r"""<!doctype html>
 
         <div class="row" id="aiTortaInternaBox" style="display:none;">
           <div class="col">
-            <label>Torta di compleanno (inclusa) *</label>
+            <label>Torta di compleanno (inclusa)</label>
             {% set ti2 = form.get('torta_interna_choice','') %}
             <select name="torta_interna_choice" id="torta_interna_choice_ai">
               <option value="" {% if ti2=='' %}selected{% endif %}>Seleziona...</option>
@@ -1235,7 +1234,7 @@ BOOKING_HTML = r"""<!doctype html>
           </div>
 
           <div class="col" id="aiTortaAltroBox" style="display:none;">
-            <label>Gusto scelto (se "Altro") *</label>
+            <label>Gusto scelto (se "Altro")</label>
             <input name="torta_gusto_altro" id="torta_gusto_altro_ai" value="{{form.get('torta_gusto_altro','')}}" />
           </div>
         </div>
