@@ -1,4 +1,4 @@
-# app_lullyland_completo_v2.py
+# app.py
 import os
 import sqlite3
 import base64
@@ -172,7 +172,6 @@ def to_int(val):
         return None
 
 
-
 def first_nonempty(values):
     """Return first non-empty string from a list-like; otherwise ''"""
     for v in values or []:
@@ -182,6 +181,20 @@ def first_nonempty(values):
         if s:
             return s
     return ""
+
+
+def last_nonempty(values):
+    """Return last non-empty string from a list-like; otherwise ''"""
+    if not values:
+        return ""
+    for v in reversed(list(values)):
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
+
 
 def eur(d: Decimal) -> str:
     q = d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -872,6 +885,11 @@ def booking_new():
                 if request.form.get(f"extra_{k}"):
                     extra_keys.append(k)
 
+        # IMPORTANT: alcuni campi hanno lo stesso name in sezioni diverse (Experience vs All-inclusive).
+        # - lato client: disabilitiamo i campi delle sezioni nascoste (vedi JS)
+        # - lato server: per sicurezza prendiamo l'ULTIMO valore non-vuoto quando arrivano più valori
+        catering_baby_choice = last_nonempty(request.form.getlist("catering_baby_choice"))
+
         payload = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "nome_festeggiato": (request.form.get("nome_festeggiato") or "").strip(),
@@ -895,7 +913,7 @@ def booking_new():
             "consenso_foto": consenso_foto,
             "acconto_eur": (request.form.get("acconto_eur") or "").strip(),
             "pacchetto_personalizzato_dettagli": (request.form.get("pacchetto_personalizzato_dettagli") or "").strip(),
-            "catering_baby_choice": (request.form.get("catering_baby_choice") or "").strip(),
+            "catering_baby_choice": (catering_baby_choice or "").strip(),
             "dessert_bimbi_choice": (request.form.get("dessert_bimbi_choice") or "").strip(),
             "dessert_adulti_choice": (request.form.get("dessert_adulti_choice") or "").strip(),
             "torta_choice": (request.form.get("torta_choice") or "").strip(),
@@ -937,8 +955,6 @@ def booking_new():
                     return render_form("Hai scelto Altro: scrivi il gusto della torta.", request.form)
 
         if payload["pacchetto"] == "Lullyland all-inclusive":
-            # NEW: dropdown muffin o torta, poi (se torta) classica o altro (+ campo)
-            # Dessert bimbi/adulti NON obbligatori: se compilati, devono essere validi
             if payload["dessert_bimbi_choice"] and payload["dessert_bimbi_choice"] not in ("muffin_nutella", "torta_compleanno"):
                 conn.close()
                 return render_form("All-inclusive: dessert bimbi non valido.", request.form)
@@ -949,8 +965,6 @@ def booking_new():
             need_torta = (payload["dessert_bimbi_choice"] == "torta_compleanno") or (payload["dessert_adulti_choice"] == "torta_compleanno")
             if need_torta:
                 payload["torta_choice"] = "interna"  # sempre interna e inclusa
-                # La scelta "Classica/Altro" e l'eventuale gusto NON sono obbligatori.
-                # Se non vengono compilati, nel contratto resteranno "(da definire)" / "(da compilare)".
                 if payload["torta_interna_choice"] and payload["torta_interna_choice"] not in ("standard", "altro"):
                     conn.close()
                     return render_form("All-inclusive: scelta torta non valida.", request.form)
@@ -1118,7 +1132,6 @@ def prenotazione_contratto_pdf(booking_id: int):
         except TypeError:
             return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, attachment_filename=filename)
     except Exception as e:
-        # Mostra un errore leggibile anche su Render (così puoi mandarmi lo screenshot).
         return (
             f"<h2>Errore generazione PDF</h2><pre>{str(e)}</pre>"
             "<p>Controlla che siano installati i pacchetti: reportlab e Pillow (vedi requirements.txt).</p>",
@@ -1152,8 +1165,6 @@ LOGIN_HTML = """<!doctype html>
 </body>
 </html>
 """
-
-
 
 BOOKING_HTML = r"""<!doctype html>
 <html>
@@ -1494,26 +1505,50 @@ BOOKING_HTML = r"""<!doctype html>
   const tortaInternaChoiceAI = document.getElementById('torta_interna_choice_ai');
   const aiTortaAltroBox = document.getElementById('aiTortaAltroBox');
 
+  function setBoxEnabled(boxEl, enabled) {
+    if (!boxEl) return;
+    const fields = boxEl.querySelectorAll('input, select, textarea');
+    fields.forEach(el => {
+      // non disabilitare sempre: i checkbox extra servono solo nella sezione visibile
+      el.disabled = !enabled;
+    });
+  }
+
   function refreshVisibility() {
     const p = pacchetto.value;
-    experienceBox.style.display = (p === 'Lullyland Experience') ? 'block' : 'none';
-    allInclusiveBox.style.display = (p === 'Lullyland all-inclusive') ? 'block' : 'none';
-    personalizzatoBox.style.display = (p === 'Personalizzato') ? 'flex' : 'none';
+
+    const showExperience = (p === 'Lullyland Experience');
+    const showAllInclusive = (p === 'Lullyland all-inclusive');
+    const showPersonalizzato = (p === 'Personalizzato');
+
+    experienceBox.style.display = showExperience ? 'block' : 'none';
+    allInclusiveBox.style.display = showAllInclusive ? 'block' : 'none';
+    personalizzatoBox.style.display = showPersonalizzato ? 'flex' : 'none';
+
+    // Cruciale: disabilita i campi delle sezioni nascoste, altrimenti vengono inviati comunque
+    // e Flask potrebbe leggere il primo valore (vuoto) invece di quello selezionato.
+    setBoxEnabled(experienceBox, showExperience);
+    setBoxEnabled(allInclusiveBox, showAllInclusive);
+    setBoxEnabled(personalizzatoBox, showPersonalizzato);
 
     const tc = tortaChoice ? tortaChoice.value : '';
-    if (tortaInternaBox) tortaInternaBox.style.display = (p === 'Lullyland Experience' && tc === 'interna') ? 'flex' : 'none';
+    if (tortaInternaBox) tortaInternaBox.style.display = (showExperience && tc === 'interna') ? 'flex' : 'none';
 
     const ti = tortaInternaChoice ? tortaInternaChoice.value : '';
-    if (tortaAltroBox) tortaAltroBox.style.display = (p === 'Lullyland Experience' && tc === 'interna' && ti === 'altro') ? 'block' : 'none';
+    if (tortaAltroBox) tortaAltroBox.style.display = (showExperience && tc === 'interna' && ti === 'altro') ? 'block' : 'none';
 
     const db = dessertBimbi ? dessertBimbi.value : '';
     const da = dessertAdulti ? dessertAdulti.value : '';
     const needTorta = (db === 'torta_compleanno' || da === 'torta_compleanno');
 
-    if (aiTortaInternaBox) aiTortaInternaBox.style.display = (p === 'Lullyland all-inclusive' && needTorta) ? 'flex' : 'none';
+    if (aiTortaInternaBox) aiTortaInternaBox.style.display = (showAllInclusive && needTorta) ? 'flex' : 'none';
 
     const ti2 = tortaInternaChoiceAI ? tortaInternaChoiceAI.value : '';
-    if (aiTortaAltroBox) aiTortaAltroBox.style.display = (p === 'Lullyland all-inclusive' && needTorta && ti2 === 'altro') ? 'block' : 'none';
+    if (aiTortaAltroBox) aiTortaAltroBox.style.display = (showAllInclusive && needTorta && ti2 === 'altro') ? 'block' : 'none';
+
+    // abilita/disabilita solo i campi "torta interna" in base alla visibilità, così non rompono l'invio
+    if (tortaInternaBox) setBoxEnabled(tortaInternaBox, (showExperience && tc === 'interna'));
+    if (aiTortaInternaBox) setBoxEnabled(aiTortaInternaBox, (showAllInclusive && needTorta));
   }
 
   pacchetto.addEventListener('change', refreshVisibility);
@@ -1596,7 +1631,6 @@ BOOKING_HTML = r"""<!doctype html>
 </body>
 </html>
 """
-
 
 LIST_HTML = """<!doctype html>
 <html>
