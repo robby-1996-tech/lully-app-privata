@@ -9,10 +9,6 @@ from calendar import monthcalendar, month_name
 
 from flask import Flask, request, redirect, url_for, session, render_template_string, abort, send_file
 
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas as pdf_canvas
-from reportlab.lib.units import mm
-from reportlab.lib.utils import ImageReader
 
 app = Flask(__name__)
 
@@ -429,6 +425,15 @@ def _wrap_text(text: str, max_chars: int):
     return lines
 
 def build_contract_pdf_bytes(row: sqlite3.Row) -> io.BytesIO:
+    # Import locali per evitare crash in avvio se reportlab non è installato
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas as pdf_canvas
+        from reportlab.lib.units import mm
+        from reportlab.lib.utils import ImageReader
+    except Exception as e:
+        raise RuntimeError("Per generare il PDF serve la libreria 'reportlab'. Installala con: pip install reportlab") from e
+
     buf = io.BytesIO()
     c = pdf_canvas.Canvas(buf, pagesize=A4)
     w, h = A4
