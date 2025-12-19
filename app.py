@@ -1110,7 +1110,12 @@ def prenotazione_contratto_pdf(booking_id: int):
 
     pdf_buf = build_contract_pdf_bytes(row)
     filename = f"contratto_prenotazione_{booking_id}.pdf"
-    return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, download_name=filename)
+
+    # Flask >= 2 usa "download_name", Flask < 2 usa "attachment_filename"
+    try:
+        return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, download_name=filename)
+    except TypeError:
+        return send_file(pdf_buf, mimetype="application/pdf", as_attachment=True, attachment_filename=filename)
 
 LOGIN_HTML = """<!doctype html>
 <html>
